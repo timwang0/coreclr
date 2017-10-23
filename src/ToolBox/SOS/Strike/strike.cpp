@@ -8592,7 +8592,7 @@ DECLARE_API(DumpLog)
 
     return Status;
 }
-
+#define TRACE_GC
 #ifdef TRACE_GC
 
 DECLARE_API (DumpGCLog)
