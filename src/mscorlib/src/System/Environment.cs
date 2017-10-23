@@ -14,6 +14,7 @@
 
 namespace System
 {
+    using System.Buffers;
     using System.IO;
     using System.Security;
     using System.Resources;
@@ -30,7 +31,6 @@ namespace System
     using System.Threading;
     using System.Runtime.ConstrainedExecution;
     using System.Runtime.Versioning;
-    using System.Diagnostics.Contracts;
 
     public enum EnvironmentVariableTarget
     {
@@ -116,26 +116,10 @@ namespace System
         [MethodImplAttribute(MethodImplOptions.InternalCall)]
         public static extern void FailFast(String message, Exception exception);
 
-        // Returns the system directory (ie, C:\WinNT\System32).
-        internal static String SystemDirectory
-        {
-            get
-            {
-                StringBuilder sb = new StringBuilder(Path.MaxPath);
-                int r = Win32Native.GetSystemDirectory(sb, Path.MaxPath);
-                Debug.Assert(r < Path.MaxPath, "r < Path.MaxPath");
-                if (r == 0) throw Win32Marshal.GetExceptionForLastWin32Error();
-                String path = sb.ToString();
-
-                return path;
-            }
-        }
-
         public static String ExpandEnvironmentVariables(String name)
         {
             if (name == null)
                 throw new ArgumentNullException(nameof(name));
-            Contract.EndContractBlock();
 
             if (name.Length == 0)
             {
@@ -289,7 +273,6 @@ namespace System
         {
             get
             {
-                Contract.Ensures(Contract.Result<String>() != null);
 #if PLATFORM_WINDOWS
                 return "\r\n";
 #else
@@ -362,7 +345,6 @@ namespace System
             [MethodImpl(MethodImplOptions.NoInlining)] // Prevent inlining from affecting where the stacktrace starts
             get
             {
-                Contract.Ensures(Contract.Result<String>() != null);
                 return Internal.Runtime.Augments.EnvironmentAugments.StackTrace;
             }
         }
@@ -540,23 +522,33 @@ namespace System
 
         private static string GetEnvironmentVariableCore(string variable)
         {
-            StringBuilder sb = StringBuilderCache.Acquire(128); // A somewhat reasonable default size
-            int requiredSize = Win32Native.GetEnvironmentVariable(variable, sb, sb.Capacity);
+            Span<char> buffer = stackalloc char[128]; // A somewhat reasonable default size
+            return GetEnvironmentVariableCoreHelper(variable, buffer);
+        }
+
+        private static string GetEnvironmentVariableCoreHelper(string variable, Span<char> buffer)
+        {
+            int requiredSize = Win32Native.GetEnvironmentVariable(variable, buffer);
 
             if (requiredSize == 0 && Marshal.GetLastWin32Error() == Win32Native.ERROR_ENVVAR_NOT_FOUND)
             {
-                StringBuilderCache.Release(sb);
                 return null;
             }
 
-            while (requiredSize > sb.Capacity)
+            if (requiredSize > buffer.Length)
             {
-                sb.Capacity = requiredSize;
-                sb.Length = 0;
-                requiredSize = Win32Native.GetEnvironmentVariable(variable, sb, sb.Capacity);
+                char[] chars = ArrayPool<char>.Shared.Rent(requiredSize);
+                try
+                {
+                    return GetEnvironmentVariableCoreHelper(variable, chars);
+                }
+                finally
+                {
+                    ArrayPool<char>.Shared.Return(chars);
+                }
             }
 
-            return StringBuilderCache.GetStringAndRelease(sb);
+            return new string(buffer.Slice(0, requiredSize));
         }
 
         private static string GetEnvironmentVariableCore(string variable, EnvironmentVariableTarget target)
@@ -581,7 +573,6 @@ namespace System
             }
             else if (target == EnvironmentVariableTarget.User)
             {
-                Debug.Assert(target == EnvironmentVariableTarget.User);
                 baseKey = Registry.CurrentUser;
                 keyName = "Environment";
             }
@@ -671,7 +662,6 @@ namespace System
             }
             else if (target == EnvironmentVariableTarget.User)
             {
-                Debug.Assert(target == EnvironmentVariableTarget.User);
                 baseKey = Registry.CurrentUser;
                 keyName = @"Environment";
             }
@@ -749,8 +739,6 @@ namespace System
             }
             else if (target == EnvironmentVariableTarget.User)
             {
-                Debug.Assert(target == EnvironmentVariableTarget.User);
-
                 // User-wide environment variables stored in the registry are limited to 255 chars for the environment variable name.
                 const int MaxUserEnvVariableLength = 255;
                 if (variable.Length >= MaxUserEnvVariableLength)

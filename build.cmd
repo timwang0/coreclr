@@ -19,6 +19,24 @@ set __ThisScriptFull="%~f0"
 :: is already configured to use that toolset. Otherwise, we will fallback to using the VS2015
 :: toolset if it is installed. Finally, we will fail the script if no supported VS instance
 :: can be found.
+
+if defined VisualStudioVersion goto :Run
+
+set _VSWHERE="%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+if exist %_VSWHERE% (
+  for /f "usebackq tokens=*" %%i in (`%_VSWHERE% -latest -property installationPath`) do set _VSCOMNTOOLS=%%i\Common7\Tools
+)
+if not exist "%_VSCOMNTOOLS%" set _VSCOMNTOOLS=%VS140COMNTOOLS%
+if not exist "%_VSCOMNTOOLS%" (
+  echo Error: Visual Studio 2015 or 2017 required.
+  echo        Please see https://github.com/dotnet/corefx/blob/master/Documentation/project-docs/developer-guide.md for build instructions.
+  exit /b 1
+)
+
+call "%_VSCOMNTOOLS%\VsDevCmd.bat"
+
+:Run
+
 if defined VS150COMNTOOLS (
   set "__VSToolsRoot=%VS150COMNTOOLS%"
   set "__VCToolsRoot=%VS150COMNTOOLS%\..\..\VC\Auxiliary\Build"
@@ -94,6 +112,7 @@ set __UnprocessedBuildArgs=
 set __RunArgs=
 
 set __BuildCoreLib=1
+set __BuildSOS=1
 set __BuildNative=1
 set __BuildTests=1
 set __BuildPackages=1
@@ -139,11 +158,11 @@ if [!__PassThroughArgs!]==[] (
     set __PassThroughArgs=%__PassThroughArgs% %1
 )
 
-if /i "%1" == "-freebsdmscorlib"     (set __BuildNativeCoreLib=0&set __BuildNative=0&set __BuildTests=0&set __BuildPackages=0&set __BuildOS=FreeBSD&set __SkipNugetPackage=1&set processedArgs=!processedArgs! %1&shift&goto Arg_Loop)
-if /i "%1" == "-linuxmscorlib"       (set __BuildNativeCoreLib=0&set __BuildNative=0&set __BuildTests=0&set __BuildPackages=0&set __BuildOS=Linux&set __SkipNugetPackage=1&set processedArgs=!processedArgs! %1&shift&goto Arg_Loop)
-if /i "%1" == "-netbsdmscorlib"      (set __BuildNativeCoreLib=0&set __BuildNative=0&set __BuildTests=0&set __BuildPackages=0&set __BuildOS=NetBSD&set __SkipNugetPackage=1&set processedArgs=!processedArgs! %1&shift&goto Arg_Loop)
-if /i "%1" == "-osxmscorlib"         (set __BuildNativeCoreLib=0&set __BuildNative=0&set __BuildTests=0&set __BuildPackages=0&set __BuildOS=OSX&set __SkipNugetPackage=1&set processedArgs=!processedArgs! %1&shift&goto Arg_Loop)
-if /i "%1" == "-windowsmscorlib"     (set __BuildNativeCoreLib=0&set __BuildNative=0&set __BuildTests=0&set __BuildPackages=0&set __BuildOS=Windows_NT&set __SkipNugetPackage=1&set processedArgs=!processedArgs! %1&shift&goto Arg_Loop)
+if /i "%1" == "-freebsdmscorlib"     (set __BuildSOS=0&set __BuildNativeCoreLib=0&set __BuildNative=0&set __BuildTests=0&set __BuildPackages=0&set __BuildOS=FreeBSD&set __SkipNugetPackage=1&set processedArgs=!processedArgs! %1&shift&goto Arg_Loop)
+if /i "%1" == "-linuxmscorlib"       (set __BuildSOS=0&set __BuildNativeCoreLib=0&set __BuildNative=0&set __BuildTests=0&set __BuildPackages=0&set __BuildOS=Linux&set __SkipNugetPackage=1&set processedArgs=!processedArgs! %1&shift&goto Arg_Loop)
+if /i "%1" == "-netbsdmscorlib"      (set __BuildSOS=0&set __BuildNativeCoreLib=0&set __BuildNative=0&set __BuildTests=0&set __BuildPackages=0&set __BuildOS=NetBSD&set __SkipNugetPackage=1&set processedArgs=!processedArgs! %1&shift&goto Arg_Loop)
+if /i "%1" == "-osxmscorlib"         (set __BuildSOS=0&set __BuildNativeCoreLib=0&set __BuildNative=0&set __BuildTests=0&set __BuildPackages=0&set __BuildOS=OSX&set __SkipNugetPackage=1&set processedArgs=!processedArgs! %1&shift&goto Arg_Loop)
+if /i "%1" == "-windowsmscorlib"     (set __BuildSOS=0&set __BuildNativeCoreLib=0&set __BuildNative=0&set __BuildTests=0&set __BuildPackages=0&set __BuildOS=Windows_NT&set __SkipNugetPackage=1&set processedArgs=!processedArgs! %1&shift&goto Arg_Loop)
 if /i "%1" == "-nativemscorlib"      (set __BuildNativeCoreLib=1&set __BuildCoreLib=0&set __BuildNative=0&set __BuildTests=0&set __BuildPackages=0&set processedArgs=!processedArgs! %1&shift&goto Arg_Loop)
 if /i "%1" == "-configureonly"       (set __ConfigureOnly=1&set __BuildNative=1&set __BuildNativeCoreLib=0&set __BuildCoreLib=0&set __BuildTests=0&set __BuildPackages=0&set processedArgs=!processedArgs! %1&shift&goto Arg_Loop)
 if /i "%1" == "-skipconfigure"       (set __SkipConfigure=1&set processedArgs=!processedArgs! %1&shift&goto Arg_Loop)
@@ -167,11 +186,11 @@ if /i "%1" == "-buildstandalonegc"   (
 
 REM TODO these are deprecated remove them eventually
 REM don't add more, use the - syntax instead
-if /i "%1" == "freebsdmscorlib"     (set __BuildNativeCoreLib=0&set __BuildNative=0&set __BuildTests=0&set __BuildPackages=0&set __BuildOS=FreeBSD&set __SkipNugetPackage=1&set processedArgs=!processedArgs! %1&shift&goto Arg_Loop)
-if /i "%1" == "linuxmscorlib"       (set __BuildNativeCoreLib=0&set __BuildNative=0&set __BuildTests=0&set __BuildPackages=0&set __BuildOS=Linux&set __SkipNugetPackage=1&set processedArgs=!processedArgs! %1&shift&goto Arg_Loop)
-if /i "%1" == "netbsdmscorlib"      (set __BuildNativeCoreLib=0&set __BuildNative=0&set __BuildTests=0&set __BuildPackages=0&set __BuildOS=NetBSD&set __SkipNugetPackage=1&set processedArgs=!processedArgs! %1&shift&goto Arg_Loop)
-if /i "%1" == "osxmscorlib"         (set __BuildNativeCoreLib=0&set __BuildNative=0&set __BuildTests=0&set __BuildPackages=0&set __BuildOS=OSX&set __SkipNugetPackage=1&set processedArgs=!processedArgs! %1&shift&goto Arg_Loop)
-if /i "%1" == "windowsmscorlib"     (set __BuildNativeCoreLib=0&set __BuildNative=0&set __BuildTests=0&set __BuildPackages=0&set __BuildOS=Windows_NT&set __SkipNugetPackage=1&set processedArgs=!processedArgs! %1&shift&goto Arg_Loop)
+if /i "%1" == "freebsdmscorlib"     (set __BuildSOS=0&set __BuildNativeCoreLib=0&set __BuildNative=0&set __BuildTests=0&set __BuildPackages=0&set __BuildOS=FreeBSD&set __SkipNugetPackage=1&set processedArgs=!processedArgs! %1&shift&goto Arg_Loop)
+if /i "%1" == "linuxmscorlib"       (set __BuildSOS=0&set __BuildNativeCoreLib=0&set __BuildNative=0&set __BuildTests=0&set __BuildPackages=0&set __BuildOS=Linux&set __SkipNugetPackage=1&set processedArgs=!processedArgs! %1&shift&goto Arg_Loop)
+if /i "%1" == "netbsdmscorlib"      (set __BuildSOS=0&set __BuildNativeCoreLib=0&set __BuildNative=0&set __BuildTests=0&set __BuildPackages=0&set __BuildOS=NetBSD&set __SkipNugetPackage=1&set processedArgs=!processedArgs! %1&shift&goto Arg_Loop)
+if /i "%1" == "osxmscorlib"         (set __BuildSOS=0&set __BuildNativeCoreLib=0&set __BuildNative=0&set __BuildTests=0&set __BuildPackages=0&set __BuildOS=OSX&set __SkipNugetPackage=1&set processedArgs=!processedArgs! %1&shift&goto Arg_Loop)
+if /i "%1" == "windowsmscorlib"     (set __BuildSOS=0&set __BuildNativeCoreLib=0&set __BuildNative=0&set __BuildTests=0&set __BuildPackages=0&set __BuildOS=Windows_NT&set __SkipNugetPackage=1&set processedArgs=!processedArgs! %1&shift&goto Arg_Loop)
 if /i "%1" == "nativemscorlib"      (set __BuildNativeCoreLib=1&set __BuildCoreLib=0&set __BuildNative=0&set __BuildTests=0&set __BuildPackages=0&set processedArgs=!processedArgs! %1&shift&goto Arg_Loop)
 if /i "%1" == "configureonly"       (set __ConfigureOnly=1&set __BuildNative=1&set __BuildNativeCoreLib=0&set __BuildCoreLib=0&set __BuildTests=0&set __BuildPackages=0&set processedArgs=!processedArgs! %1&shift&goto Arg_Loop)
 if /i "%1" == "skipconfigure"       (set __SkipConfigure=1&set processedArgs=!processedArgs! %1&shift&goto Arg_Loop)
@@ -286,6 +305,16 @@ echo %__MsgPrefix%Checking prerequisites
 :: Eval the output from probe-win1.ps1
 for /f "delims=" %%a in ('powershell -NoProfile -ExecutionPolicy ByPass "& ""%__SourceDir%\pal\tools\probe-win.ps1"""') do %%a
 
+REM NumberOfEnabledCore is an WMI property providing number of enabled cores on machine
+REM processor(s) and later is used to set optimal level of CL paralellism during native build step
+if not defined NumberOfEnabledCore (
+REM Determine number of physical processor cores available on machine
+for /f "tokens=*" %%I in (
+    'wmic cpu get NumberOfEnabledCore /value ^| find "=" 2^>NUL'
+    ) do set %%I
+)
+echo %__MsgPrefix%Number of available CPU cores %NumberOfEnabledCore%
+
 REM =========================================================================================
 REM ===
 REM === Start the build steps
@@ -396,7 +425,7 @@ if %__BuildNative% EQU 1 (
     set __MsbuildWrn=/flp1:WarningsOnly;LogFile=!__BuildWrn!
     set __MsbuildErr=/flp2:ErrorsOnly;LogFile=!__BuildErr!
 
-    @call %__ProjectDir%\run.cmd build -Project=%__IntermediatesDir%\install.vcxproj -MsBuildLog=!__MsbuildLog! -MsBuildWrn=!__MsbuildWrn! -MsBuildErr=!__MsbuildErr! -configuration=%__BuildType% %nativePlatfromArgs% %__RunArgs% %__UnprocessedBuildArgs%
+    @call %__ProjectDir%\run.cmd build -Project=%__IntermediatesDir%\install.vcxproj -MsBuildLog=!__MsbuildLog! -MsBuildWrn=!__MsbuildWrn! -MsBuildErr=!__MsbuildErr! -configuration=%__BuildType% %nativePlatfromArgs% %__RunArgs% -ExtraParameters="/p:ForceImportBeforeCppTargets=%__ProjectDir%/clr.nativebuild.props /m:2" %__UnprocessedBuildArgs%
 
     if not !errorlevel! == 0 (
         echo %__MsgPrefix%Error: native component build failed. Refer to the build log files for details:
@@ -466,9 +495,9 @@ if /i "%__DoCrossArchBuild%"=="1" (
     set __MsbuildWrn=/flp1:WarningsOnly;LogFile=!__BuildWrn!
     set __MsbuildErr=/flp2:ErrorsOnly;LogFile=!__BuildErr!
 
-    @call %__ProjectDir%\run.cmd build -Project=%__CrossCompIntermediatesDir%\install.vcxproj -configuration=%__BuildType% -platform=%__CrossArch% -MsBuildLog=!__MsbuildLog! -MsBuildWrn=!__MsbuildWrn! -MsBuildErr=!__MsbuildErr! %__RunArgs% %__UnprocessedBuildArgs%
+    @call %__ProjectDir%\run.cmd build -Project=%__CrossCompIntermediatesDir%\install.vcxproj -configuration=%__BuildType% -platform=%__CrossArch% -MsBuildLog=!__MsbuildLog! -MsBuildWrn=!__MsbuildWrn! -MsBuildErr=!__MsbuildErr! %__RunArgs% -ExtraParameters="/p:ForceImportBeforeCppTargets=%__ProjectDir%/clr.nativebuild.props /m:2" %__UnprocessedBuildArgs%
 
-    if not !errorlevel! == 0 (
+        if not !errorlevel! == 0 (
         echo %__MsgPrefix%Error: cross-arch components build failed. Refer to the build log files for details:
         echo     !__BuildLog!
         echo     !__BuildWrn!
@@ -499,6 +528,10 @@ if %__BuildCoreLib% EQU 1 (
     if not defined __IbcTuning (
       set __ExtraBuildArgs=!__ExtraBuildArgs! -OptimizationDataDir="%__PackagesDir%/optimization.%__BuildOS%-%__BuildArch%.IBC.CoreCLR/%__IbcOptDataVersion%/data/"
       set __ExtraBuildArgs=!__ExtraBuildArgs! -EnableProfileGuidedOptimization=true
+    )
+
+    if "%__BuildSOS%" == "0" (
+        set __ExtraBuildArgs=!__ExtraBuildArgs! -SkipSOS=true
     )
 
     if /i "%__BuildArch%" == "arm64" (

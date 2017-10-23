@@ -282,7 +282,7 @@ Cleanup:
 BOOL WINAPI CtrlHandler(DWORD fdwCtrlType)
 {
     // Since the child SuperPMI.exe processes share the same console
-     //We don't need to kill them individually as they also receive the Ctrl-C
+    // We don't need to kill them individually as they also receive the Ctrl-C
 
     closeRequested = true; // set a flag to indicate we need to quit
     return TRUE;
@@ -323,8 +323,35 @@ void MergeWorkerMCLs(char* mclFilename, char** arrWorkerMCLPath, int workerCount
         LogError("Unable to write to MCL file %s.", mclFilename);
 }
 
-// From the arguments that we parsed, construct the arguments to pass to the child processes.
 #define MAX_CMDLINE_SIZE 0x1000 // 4 KB
+
+//-------------------------------------------------------------
+// addJitOptionArgument: Writes jitOption arguments to the argument string for a child spmi process.
+//
+// Arguments:
+//    jitOptions   -   map with options
+//    bytesWritten -   size of the argument string in bytes
+//    spmiArgs     -   pointer to the argument string
+//    optionName   -   the jitOption name, can include [force] flag.
+//
+void addJitOptionArgument(LightWeightMap<DWORD, DWORD>* jitOptions,
+                          int&        bytesWritten,
+                          char*       spmiArgs,
+                          const char* optionName)
+{
+    if (jitOptions != nullptr)
+    {
+        for (unsigned i = 0; i < jitOptions->GetCount(); i++)
+        {
+            wchar_t* key   = (wchar_t*)jitOptions->GetBuffer(jitOptions->GetKey(i));
+            wchar_t* value = (wchar_t*)jitOptions->GetBuffer(jitOptions->GetItem(i));
+            bytesWritten += sprintf_s(spmiArgs + bytesWritten, MAX_CMDLINE_SIZE - bytesWritten, " -%s %S=%S",
+                                      optionName, key, value);
+        }
+    }
+}
+
+// From the arguments that we parsed, construct the arguments to pass to the child processes.
 char* ConstructChildProcessArgs(const CommandLine::Options& o)
 {
     int   bytesWritten = 0;
@@ -361,25 +388,11 @@ char* ConstructChildProcessArgs(const CommandLine::Options& o)
     ADDARG_STRING(o.targetArchitecture, "-target");
     ADDARG_STRING(o.compileList, "-compile");
 
-    if (o.jitOptions != nullptr)
-    {
-        for (unsigned i = 0; i < o.jitOptions->GetCount(); i++)
-        {
-            wchar_t* key = (wchar_t*)o.jitOptions->GetBuffer(o.jitOptions->GetKey(i));
-            wchar_t* value = (wchar_t*)o.jitOptions->GetBuffer(o.jitOptions->GetItem(i));
-            bytesWritten += sprintf_s(spmiArgs + bytesWritten, MAX_CMDLINE_SIZE - bytesWritten, " -jitoption %S=%S", key, value);
-        }
-    }
+    addJitOptionArgument(o.forceJitOptions, bytesWritten, spmiArgs, "jitoption force");
+    addJitOptionArgument(o.forceJit2Options, bytesWritten, spmiArgs, "jit2option force");
 
-    if (o.jit2Options != nullptr)
-    {
-        for (unsigned i = 0; i < o.jit2Options->GetCount(); i++)
-        {
-            wchar_t* key = (wchar_t*)o.jit2Options->GetBuffer(o.jit2Options->GetKey(i));
-            wchar_t* value = (wchar_t*)o.jit2Options->GetBuffer(o.jit2Options->GetItem(i));
-            bytesWritten += sprintf_s(spmiArgs + bytesWritten, MAX_CMDLINE_SIZE - bytesWritten, " -jit2option %S=%S", key, value);
-        }
-    }
+    addJitOptionArgument(o.jitOptions, bytesWritten, spmiArgs, "jitoption");
+    addJitOptionArgument(o.jit2Options, bytesWritten, spmiArgs, "jit2option");
 
     ADDSTRING(o.nameOfJit);
     ADDSTRING(o.nameOfJit2);
@@ -423,7 +436,7 @@ int doParallelSuperPMI(CommandLine::Options& o)
         o.workerCount = sysinfo.dwNumberOfProcessors;
 
         // If we ever execute on a machine which has more than MAXIMUM_WAIT_OBJECTS(64) CPU cores
-         //we still can't spawn more than the max supported by WaitForMultipleObjects()
+        // we still can't spawn more than the max supported by WaitForMultipleObjects()
         if (o.workerCount > MAXIMUM_WAIT_OBJECTS)
             o.workerCount = MAXIMUM_WAIT_OBJECTS;
     }
@@ -574,7 +587,7 @@ int doParallelSuperPMI(CommandLine::Options& o)
         int loaded = 0, jitted = 0, failed = 0, diffs = 0;
 
         // Read the stderr files and log them as errors
-         //Read the stdout files and parse them for counts and log any MISSING or ISSUE errors
+        // Read the stdout files and parse them for counts and log any MISSING or ISSUE errors
         for (int i = 0; i < o.workerCount; i++)
         {
             ProcessChildStdErr(arrStdErrorPath[i]);

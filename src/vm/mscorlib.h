@@ -933,7 +933,7 @@ DEFINE_CLASS(TP_WAIT_CALLBACK,         Threading,              _ThreadPoolWaitCa
 DEFINE_METHOD(TP_WAIT_CALLBACK,        PERFORM_WAIT_CALLBACK,               PerformWaitCallback,                   SM_RetBool)
 
 DEFINE_CLASS(TIMER_QUEUE,           Threading,                TimerQueue)
-DEFINE_METHOD(TIMER_QUEUE,          APPDOMAIN_TIMER_CALLBACK, AppDomainTimerCallback,   SM_RetVoid)
+DEFINE_METHOD(TIMER_QUEUE,          APPDOMAIN_TIMER_CALLBACK, AppDomainTimerCallback,   SM_Int_RetVoid)
 
 DEFINE_CLASS(TIMESPAN,              System,                 TimeSpan)
 
@@ -1420,9 +1420,9 @@ DEFINE_CLASS(LOADERALLOCATORSCOUT,      Reflection,             LoaderAllocatorS
 DEFINE_CLASS(CONTRACTEXCEPTION,     CodeContracts,  ContractException)
 
 DEFINE_CLASS_U(CodeContracts,       ContractException,          ContractExceptionObject)
-DEFINE_FIELD_U(_Kind,               ContractExceptionObject,    _Kind)
-DEFINE_FIELD_U(_UserMessage,        ContractExceptionObject,    _UserMessage)
-DEFINE_FIELD_U(_Condition,          ContractExceptionObject,    _Condition)
+DEFINE_FIELD_U(_kind,               ContractExceptionObject,    _Kind)
+DEFINE_FIELD_U(_userMessage,        ContractExceptionObject,    _UserMessage)
+DEFINE_FIELD_U(_condition,          ContractExceptionObject,    _Condition)
 
 #ifdef FEATURE_COMINTEROP
 DEFINE_CLASS(ASYNC_TRACING_EVENT_ARGS,       WindowsFoundationDiag,         TracingStatusChangedEventArgs)
@@ -1448,6 +1448,17 @@ DEFINE_METHOD(CUTF8MARSHALER, CLEAR_NATIVE, ClearNative, SM_IntPtr_RetVoid)
 DEFINE_CLASS(UTF8BUFFERMARSHALER, StubHelpers, UTF8BufferMarshaler)
 DEFINE_METHOD(UTF8BUFFERMARSHALER, CONVERT_TO_NATIVE, ConvertToNative, NoSig)
 DEFINE_METHOD(UTF8BUFFERMARSHALER, CONVERT_TO_MANAGED, ConvertToManaged, NoSig)
+
+// Classes referenced in EqualityComparer<T>.Default optimization
+
+DEFINE_CLASS(BYTE_EQUALITYCOMPARER, CollectionsGeneric, ByteEqualityComparer)
+DEFINE_CLASS(SHORT_ENUM_EQUALITYCOMPARER, CollectionsGeneric, ShortEnumEqualityComparer`1)
+DEFINE_CLASS(SBYTE_ENUM_EQUALITYCOMPARER, CollectionsGeneric, SByteEnumEqualityComparer`1)
+DEFINE_CLASS(ENUM_EQUALITYCOMPARER, CollectionsGeneric, EnumEqualityComparer`1)
+DEFINE_CLASS(LONG_ENUM_EQUALITYCOMPARER, CollectionsGeneric, LongEnumEqualityComparer`1)
+DEFINE_CLASS(NULLABLE_EQUALITYCOMPARER, CollectionsGeneric, NullableEqualityComparer`1)
+DEFINE_CLASS(GENERIC_EQUALITYCOMPARER, CollectionsGeneric, GenericEqualityComparer`1)
+DEFINE_CLASS(OBJECT_EQUALITYCOMPARER, CollectionsGeneric, ObjectEqualityComparer`1)
 
 #undef DEFINE_CLASS
 #undef DEFINE_METHOD

@@ -213,11 +213,11 @@ TODO: Talk about initializing strutures before use
     #define SELECTANY extern __declspec(selectany)
 #endif
 
-SELECTANY const GUID JITEEVersionIdentifier = { /* 7f70c266-eada-427b-be8a-be1260e34b1b */
-    0x7f70c266,
-    0xeada,
-    0x427b,
-    {0xbe, 0x8a, 0xbe, 0x12, 0x60, 0xe3, 0x4b, 0x1b}
+SELECTANY const GUID JITEEVersionIdentifier = { /* 8f51c68e-d515-425c-9e04-97e4a8148b07 */
+    0x8f51c68e,
+    0xd515,
+    0x425c,
+    {0x9e, 0x04, 0x97, 0xe4, 0xa8, 0x14, 0x8b, 0x07}
 };
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -1954,6 +1954,14 @@ typedef SIZE_T GSCookie;
 
 const int MAX_EnC_HANDLER_NESTING_LEVEL = 6;
 
+// Results from type comparison queries
+enum class TypeCompareState
+{
+    MustNot = -1, // types are not equal
+    May = 0,      // types may be equal (must test at runtime)
+    Must = 1,     // type are equal
+};
+
 //
 // This interface is logically split into sections for each class of information 
 // (ICorMethodInfo, ICorModuleInfo, etc.). This split used to exist physically as well
@@ -2083,6 +2091,12 @@ public:
             CORINFO_METHOD_HANDLE       virtualMethod,          /* IN */
             CORINFO_CLASS_HANDLE        implementingClass,      /* IN */
             CORINFO_CONTEXT_HANDLE      ownerType = NULL        /* IN */
+            ) = 0;
+
+    // Given T, return the type of the default EqualityComparer<T>.
+    // Returns null if the type can't be determined exactly.
+    virtual CORINFO_CLASS_HANDLE getDefaultEqualityComparerClass(
+            CORINFO_CLASS_HANDLE elemType
             ) = 0;
 
     // Given resolved token that corresponds to an intrinsic classified as
@@ -2481,6 +2495,20 @@ public:
 
     // TRUE if cls1 and cls2 are considered equivalent types.
     virtual BOOL areTypesEquivalent(
+            CORINFO_CLASS_HANDLE        cls1,
+            CORINFO_CLASS_HANDLE        cls2
+            ) = 0;
+
+    // See if a cast from fromClass to toClass will succeed, fail, or needs
+    // to be resolved at runtime.
+    virtual TypeCompareState compareTypesForCast(
+            CORINFO_CLASS_HANDLE        fromClass,
+            CORINFO_CLASS_HANDLE        toClass
+            ) = 0;
+
+    // See if types represented by cls1 and cls2 compare equal, not
+    // equal, or the comparison needs to be resolved at runtime.
+    virtual TypeCompareState compareTypesForEquality(
             CORINFO_CLASS_HANDLE        cls1,
             CORINFO_CLASS_HANDLE        cls2
             ) = 0;

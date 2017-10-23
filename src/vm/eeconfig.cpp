@@ -230,7 +230,6 @@ HRESULT EEConfig::Init()
     fLegacyApartmentInitPolicy = false;
     fLegacyComHierarchyVisibility = false;
     fLegacyComVTableLayout = false;
-    fLegacyVirtualMethodCallVerification = false;
     fNewComVTableLayout = false;
 
 #ifdef FEATURE_CORRUPTING_EXCEPTIONS

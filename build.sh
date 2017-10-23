@@ -2,7 +2,7 @@
 
 # resolve python-version to use
 if [ "$PYTHON" == "" ] ; then
-    if ! PYTHON=$(command -v python || command -v python2 || command -v python 2.7)
+    if ! PYTHON=$(command -v python2.7 || command -v python2 || command -v python)
     then
        echo "Unable to locate build-dependency python2.x!" 1>&2
        exit 1
@@ -74,6 +74,10 @@ initHostDistroRid()
             fi
         fi
     fi
+    if [ "$__HostOS" == "FreeBSD" ]; then
+        __freebsd_version=`sysctl -n kern.osrelease | cut -f1 -d'.'`
+        __HostDistroRid="freebsd.$__freebsd_version-$__HostArch"
+    fi
 
     if [ "$__HostDistroRid" == "" ]; then
         echo "WARNING: Can not determine runtime id for current distro."
@@ -107,6 +111,8 @@ initTargetDistroRid()
             export __DistroRid="linux-$__BuildArch"
         elif [ "$__BuildOS" == "OSX" ]; then
             export __DistroRid="osx-$__BuildArch"
+        elif [ "$__BuildOS" == "FreeBSD" ]; then
+            export __DistroRid="freebsd-$__BuildArch"
         fi
     fi
 }
@@ -224,7 +230,7 @@ generate_event_logging_sources()
         fi
 
         case $__BuildOS in
-            Linux)
+            Linux|FreeBSD)
                 echo "Laying out dynamically generated EventPipe Implementation"
                 $PYTHON -B $__PythonWarningFlags "$__ProjectRoot/src/scripts/genEventPipe.py" --man "$__ProjectRoot/src/vm/ClrEtwAll.man" --intermediate "$__GeneratedIntermediateEventPipe" --exc "$__ProjectRoot/src/vm/ClrEtwAllMeta.lst"
                 if  [[ $? != 0 ]]; then
@@ -237,7 +243,7 @@ generate_event_logging_sources()
 
         #determine the logging system
         case $__BuildOS in
-            Linux)
+            Linux|FreeBSD)
                 echo "Laying out dynamically generated Event Logging Implementation of Lttng"
                 $PYTHON -B $__PythonWarningFlags "$__ProjectRoot/src/scripts/genXplatLttng.py" --man "$__ProjectRoot/src/vm/ClrEtwAll.man" --intermediate "$__GeneratedIntermediateEventProvider"
                 if  [[ $? != 0 ]]; then
@@ -553,6 +559,10 @@ case $CPUName in
         __HostArch=arm64
         ;;
 
+    amd64)
+        __BuildArch=x64
+        __HostArch=x64
+        ;;
     *)
         echo "Unknown CPU $CPUName detected, configuring as if for x64"
         __BuildArch=x64
@@ -860,6 +870,16 @@ while :; do
               exit 1
             fi
             ;;
+        osgroup|-osgroup)
+            if [ -n "$2" ]; then
+              __BuildOS="$2"
+              shift
+            else
+              echo "ERROR: 'osgroup' requires a non-empty option argument"
+              exit 1
+            fi
+            ;;
+
         *)
             __UnprocessedBuildArgs="$__UnprocessedBuildArgs $1"
             ;;
@@ -878,19 +898,8 @@ fi
 
 # Set default clang version
 if [[ $__ClangMajorVersion == 0 && $__ClangMinorVersion == 0 ]]; then
-    if [ $__CrossBuild == 1 ]; then
-        if [[ "$__BuildArch" == "arm" || "$__BuildArch" == "armel" ]]; then
-            __ClangMajorVersion=3
-            __ClangMinorVersion=9
-        else
-            __ClangMajorVersion=3
-            __ClangMinorVersion=6
-        fi
-
-    else
-        __ClangMajorVersion=3
-        __ClangMinorVersion=5
-    fi
+    __ClangMajorVersion=3
+    __ClangMinorVersion=9
 fi
 
 if [[ "$__BuildArch" == "armel" ]]; then

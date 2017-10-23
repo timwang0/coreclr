@@ -21,10 +21,9 @@ namespace System
     /// Span represents a contiguous region of arbitrary memory. Unlike arrays, it can point to either managed
     /// or native memory, or to memory allocated on the stack. It is type- and memory-safe.
     /// </summary>
-    [IsReadOnly]
-    [IsByRefLike]
+    [DebuggerDisplay("{DebuggerDisplay,nq}")]
     [NonVersionable]
-    public struct Span<T>
+    public readonly ref struct Span<T>
     {
         /// <summary>A byref or a native ptr.</summary>
         private readonly ByReference<T> _pointer;
@@ -129,6 +128,9 @@ namespace System
             _pointer = new ByReference<T>(ref ptr);
             _length = length;
         }
+
+        //Debugger Display = {T[length]}
+        private string DebuggerDisplay => string.Format("{{{0}[{1}]}}", typeof(T).Name, _length);
 
         /// <summary>
         /// Returns a reference to the 0th element of the Span. If the Span is empty, returns a reference to the location where the 0th element

@@ -142,16 +142,6 @@ GenTree* Lowering::LowerNode(GenTree* node)
             ContainCheckBinary(node->AsOp());
             break;
 
-#ifdef _TARGET_XARCH_
-        case GT_NEG:
-            // Codegen of this tree node sets ZF and SF flags.
-            if (!varTypeIsFloating(node))
-            {
-                node->gtFlags |= GTF_ZSF_SET;
-            }
-            break;
-#endif // _TARGET_XARCH_
-
         case GT_MUL:
         case GT_MULHI:
 #if defined(_TARGET_X86_) && !defined(LEGACY_BACKEND)
@@ -188,12 +178,10 @@ GenTree* Lowering::LowerNode(GenTree* node)
         case GT_TEST_EQ:
         case GT_TEST_NE:
         case GT_CMP:
-            LowerCompare(node);
-            break;
+            return LowerCompare(node);
 
         case GT_JTRUE:
-            ContainCheckJTrue(node->AsOp());
-            break;
+            return LowerJTrue(node->AsOp());
 
         case GT_JMP:
             LowerJmpMethod(node);
@@ -310,6 +298,13 @@ GenTree* Lowering::LowerNode(GenTree* node)
             LowerStoreLoc(node->AsLclVarCommon());
             break;
 
+#ifdef _TARGET_ARM64_
+        case GT_CMPXCHG:
+            CheckImmedAndMakeContained(node, node->AsCmpXchg()->gtOpComparand);
+            break;
+
+        case GT_XADD:
+#endif
         case GT_LOCKADD:
             CheckImmedAndMakeContained(node, node->gtOp.gtOp2);
             break;
@@ -777,7 +772,7 @@ void Lowering::ReplaceArgWithPutArgOrCopy(GenTree** argSlot, GenTree* putArgOrCo
 {
     assert(argSlot != nullptr);
     assert(*argSlot != nullptr);
-    assert(putArgOrCopy->OperIsPutArg() || putArgOrCopy->OperIs(GT_COPY));
+    assert(putArgOrCopy->OperIsPutArg() || putArgOrCopy->OperIs(GT_BITCAST));
 
     GenTree* arg = *argSlot;
 
@@ -1084,11 +1079,29 @@ GenTreePtr Lowering::NewPutArg(GenTreeCall* call, GenTreePtr arg, fgArgTabEntryP
             // This provides the info to put this argument in in-coming arg area slot
             // instead of in out-going arg area slot.
 
-            PUT_STRUCT_ARG_STK_ONLY(assert(info->isStruct == varTypeIsStruct(type))); // Make sure state is correct
+            // Make sure state is correct. The PUTARG_STK has TYP_VOID, as it doesn't produce
+            // a result. So the type of its operand must be the correct type to push on the stack.
+            // For a FIELD_LIST, this will be the type of the field (not the type of the arg),
+            // but otherwise it is generally the type of the operand.
+            PUT_STRUCT_ARG_STK_ONLY(assert(info->isStruct == varTypeIsStruct(type)));
+            if ((arg->OperGet() != GT_FIELD_LIST))
+            {
+#if defined(FEATURE_SIMD) && defined(FEATURE_PUT_STRUCT_ARG_STK)
+                if (type == TYP_SIMD12)
+                {
+                    assert(info->numSlots == 3);
+                }
+                else
+#endif // defined(FEATURE_SIMD) && defined(FEATURE_PUT_STRUCT_ARG_STK)
+                {
+                    assert(genActualType(arg->TypeGet()) == type);
+                }
+            }
 
-            putArg = new (comp, GT_PUTARG_STK)
-                GenTreePutArgStk(GT_PUTARG_STK, type, arg, info->slotNum PUT_STRUCT_ARG_STK_ONLY_ARG(info->numSlots),
-                                 call->IsFastTailCall(), call);
+            putArg =
+                new (comp, GT_PUTARG_STK) GenTreePutArgStk(GT_PUTARG_STK, TYP_VOID, arg,
+                                                           info->slotNum PUT_STRUCT_ARG_STK_ONLY_ARG(info->numSlots),
+                                                           call->IsFastTailCall(), call);
 
 #ifdef FEATURE_PUT_STRUCT_ARG_STK
             // If the ArgTabEntry indicates that this arg is a struct
@@ -1271,7 +1284,7 @@ void Lowering::LowerArg(GenTreeCall* call, GenTreePtr* ppArg)
             GenTreeFieldList* fieldList = new (comp, GT_FIELD_LIST) GenTreeFieldList(argLo, 0, TYP_INT, nullptr);
             // Only the first fieldList node (GTF_FIELD_LIST_HEAD) is in the instruction sequence.
             (void)new (comp, GT_FIELD_LIST) GenTreeFieldList(argHi, 4, TYP_INT, fieldList);
-            putArg = NewPutArg(call, fieldList, info, TYP_VOID);
+            putArg = NewPutArg(call, fieldList, info, type);
 
             BlockRange().InsertBefore(arg, putArg);
             BlockRange().Remove(arg);
@@ -1280,17 +1293,17 @@ void Lowering::LowerArg(GenTreeCall* call, GenTreePtr* ppArg)
         }
         else
         {
+            assert(arg->OperGet() == GT_LONG);
             // For longs, we will replace the GT_LONG with a GT_FIELD_LIST, and put that under a PUTARG_STK.
             // Although the hi argument needs to be pushed first, that will be handled by the general case,
             // in which the fields will be reversed.
-            noway_assert(arg->OperGet() == GT_LONG);
             assert(info->numSlots == 2);
             GenTreePtr        argLo     = arg->gtGetOp1();
             GenTreePtr        argHi     = arg->gtGetOp2();
             GenTreeFieldList* fieldList = new (comp, GT_FIELD_LIST) GenTreeFieldList(argLo, 0, TYP_INT, nullptr);
             // Only the first fieldList node (GTF_FIELD_LIST_HEAD) is in the instruction sequence.
             (void)new (comp, GT_FIELD_LIST) GenTreeFieldList(argHi, 4, TYP_INT, fieldList);
-            putArg           = NewPutArg(call, fieldList, info, TYP_VOID);
+            putArg           = NewPutArg(call, fieldList, info, type);
             putArg->gtRegNum = info->regNum;
 
             // We can't call ReplaceArgWithPutArgOrCopy here because it presumes that we are keeping the original arg.
@@ -1304,27 +1317,40 @@ void Lowering::LowerArg(GenTreeCall* call, GenTreePtr* ppArg)
     {
 
 #ifdef _TARGET_ARMARCH_
-        // For vararg call or on armel, reg args should be all integer.
-        // Insert a copy to move float value to integer register.
-        if ((call->IsVarargs() || comp->opts.compUseSoftFP) && varTypeIsFloating(type))
+        if (isReg)
         {
-            var_types intType = (type == TYP_DOUBLE) ? TYP_LONG : TYP_INT;
-
-            GenTreePtr intArg = new (comp, GT_COPY) GenTreeCopyOrReload(GT_COPY, intType, arg);
-
-            if (comp->opts.compUseSoftFP)
+            // For vararg call or on armel, reg args should be all integer.
+            // Insert a copy to move float value to integer register.
+            if ((call->IsVarargs() || comp->opts.compUseSoftFP) && varTypeIsFloating(type))
             {
-                intArg->gtFlags |= GTF_VAR_DEATH;
+                var_types intType = (type == TYP_DOUBLE) ? TYP_LONG : TYP_INT;
+
+                GenTreePtr intArg;
+
+                intArg           = comp->gtNewBitCastNode(intType, arg);
+                intArg->gtRegNum = info->regNum;
+
+#ifdef _TARGET_ARM_
+                if (intType == TYP_LONG)
+                {
+                    assert(info->numRegs == 2);
+                    regNumber regNext = REG_NEXT(info->regNum);
+                    // double type arg regs can only be either r0:r1 or r2:r3.
+                    assert((info->regNum == REG_R0 && regNext == REG_R1) ||
+                           (info->regNum == REG_R2 && regNext == REG_R3));
+                    intArg->AsMultiRegOp()->gtOtherReg = regNext;
+                }
+#endif // _TARGET_ARM_
+
+                info->node = intArg;
+                ReplaceArgWithPutArgOrCopy(ppArg, intArg);
+
+                // Update arg/type with new ones.
+                arg  = intArg;
+                type = intType;
             }
-
-            info->node = intArg;
-            ReplaceArgWithPutArgOrCopy(ppArg, intArg);
-
-            // Update arg/type with new ones.
-            arg  = intArg;
-            type = intType;
         }
-#endif
+#endif // _TARGET_ARMARCH_
 
         putArg = NewPutArg(call, arg, info, type);
 
@@ -1731,7 +1757,10 @@ void Lowering::LowerFastTailCall(GenTreeCall* call)
     assert(!comp->opts.compNeedSecurityCheck);               // tail call from methods that need security check
     assert(!call->IsUnmanaged());                            // tail calls to unamanaged methods
     assert(!comp->compLocallocUsed);                         // tail call from methods that also do localloc
-    assert(!comp->getNeedsGSSecurityCookie());               // jit64 compat: tail calls from methods that need GS check
+
+#ifdef _TARGET_AMD64_
+    assert(!comp->getNeedsGSSecurityCookie()); // jit64 compat: tail calls from methods that need GS check
+#endif                                         // _TARGET_AMD64_
 
     // We expect to see a call that meets the following conditions
     assert(call->IsFastTailCall());
@@ -2144,6 +2173,9 @@ GenTree* Lowering::LowerTailCallViaHelper(GenTreeCall* call, GenTree* callTarget
 // Arguments:
 //    cmp - the compare node
 //
+// Return Value:
+//    The next node to lower.
+//
 // Notes:
 //    - Decomposes long comparisons that feed a GT_JTRUE (32 bit specific).
 //    - Decomposes long comparisons that produce a value (X86 specific).
@@ -2152,8 +2184,11 @@ GenTree* Lowering::LowerTailCallViaHelper(GenTreeCall* call, GenTree* callTarget
 //    - Transform cmp(and(x, y), 0) into test(x, y) (XARCH/Arm64 specific but could
 //      be used for ARM as well if support for GT_TEST_EQ/GT_TEST_NE is added).
 //    - Transform TEST(x, LSH(1, y)) into BT(x, y) (XARCH specific)
+//    - Transform RELOP(OP, 0) into SETCC(OP) or JCC(OP) if OP can set the
+//      condition flags appropriately (XARCH/ARM64 specific but could be extended
+//      to ARM32 as well if ARM32 codegen supports GTF_SET_FLAGS).
 
-void Lowering::LowerCompare(GenTree* cmp)
+GenTree* Lowering::LowerCompare(GenTree* cmp)
 {
 #ifndef _TARGET_64BIT_
     if (cmp->gtGetOp1()->TypeGet() == TYP_LONG)
@@ -2359,7 +2394,7 @@ void Lowering::LowerCompare(GenTree* cmp)
             cmp->AsCC()->gtCondition = condition;
         }
 
-        return;
+        return cmp->gtNext;
     }
 #endif
 
@@ -2563,11 +2598,10 @@ void Lowering::LowerCompare(GenTree* cmp)
             }
         }
     }
-#endif // defined(_TARGET_XARCH_) || defined(_TARGET_ARM64_)
 
-#ifdef _TARGET_XARCH_
     if (cmp->OperIs(GT_TEST_EQ, GT_TEST_NE))
     {
+#ifdef _TARGET_XARCH_
         //
         // Transform TEST_EQ|NE(x, LSH(1, y)) into BT(x, y) when possible. Using BT
         // results in smaller and faster code. It also doesn't have special register
@@ -2610,10 +2644,72 @@ void Lowering::LowerCompare(GenTree* cmp)
 
             cc->gtFlags |= GTF_USE_FLAGS | GTF_UNSIGNED;
 
-            return;
+            return cmp->gtNext;
+        }
+#endif // _TARGET_XARCH_
+    }
+    else if (cmp->OperIs(GT_EQ, GT_NE))
+    {
+        GenTree* op1 = cmp->gtGetOp1();
+        GenTree* op2 = cmp->gtGetOp2();
+
+        // TODO-CQ: right now the below peep is inexpensive and gets the benefit in most
+        // cases because in majority of cases op1, op2 and cmp would be in that order in
+        // execution. In general we should be able to check that all the nodes that come
+        // after op1 do not modify the flags so that it is safe to avoid generating a
+        // test instruction.
+
+        if (op2->IsIntegralConst(0) && (op1->gtNext == op2) && (op2->gtNext == cmp) &&
+#ifdef _TARGET_XARCH_
+            op1->OperIs(GT_AND, GT_OR, GT_XOR, GT_ADD, GT_SUB, GT_NEG))
+#else // _TARGET_ARM64_
+            op1->OperIs(GT_AND, GT_ADD, GT_SUB))
+#endif
+        {
+            op1->gtFlags |= GTF_SET_FLAGS;
+            op1->SetUnusedValue();
+
+            BlockRange().Remove(op2);
+
+            GenTree*   next = cmp->gtNext;
+            GenTree*   cc;
+            genTreeOps ccOp;
+            LIR::Use   cmpUse;
+
+            // Fast check for the common case - relop used by a JTRUE that immediately follows it.
+            if ((next != nullptr) && next->OperIs(GT_JTRUE) && (next->gtGetOp1() == cmp))
+            {
+                cc   = next;
+                ccOp = GT_JCC;
+                next = nullptr;
+                BlockRange().Remove(cmp);
+            }
+            else if (BlockRange().TryGetUse(cmp, &cmpUse) && cmpUse.User()->OperIs(GT_JTRUE))
+            {
+                cc   = cmpUse.User();
+                ccOp = GT_JCC;
+                next = nullptr;
+                BlockRange().Remove(cmp);
+            }
+            else // The relop is not used by a JTRUE or it is not used at all.
+            {
+                // Transform the relop node it into a SETCC. If it's not used we could remove
+                // it completely but that means doing more work to handle a rare case.
+                cc   = cmp;
+                ccOp = GT_SETCC;
+            }
+
+            genTreeOps condition = cmp->OperGet();
+            cc->ChangeOper(ccOp);
+            cc->AsCC()->gtCondition = condition;
+            cc->gtFlags |= GTF_USE_FLAGS | (cmp->gtFlags & GTF_UNSIGNED);
+
+            return next;
         }
     }
+#endif // defined(_TARGET_XARCH_) || defined(_TARGET_ARM64_)
 
+#ifdef _TARGET_XARCH_
     if (cmp->gtGetOp1()->TypeGet() == cmp->gtGetOp2()->TypeGet())
     {
         if (varTypeIsSmall(cmp->gtGetOp1()->TypeGet()) && varTypeIsUnsigned(cmp->gtGetOp1()->TypeGet()))
@@ -2631,6 +2727,67 @@ void Lowering::LowerCompare(GenTree* cmp)
     }
 #endif // _TARGET_XARCH_
     ContainCheckCompare(cmp->AsOp());
+    return cmp->gtNext;
+}
+
+//------------------------------------------------------------------------
+// Lowering::LowerJTrue: Lowers a JTRUE node.
+//
+// Arguments:
+//    jtrue - the JTRUE node
+//
+// Return Value:
+//    The next node to lower (usually nullptr).
+//
+// Notes:
+//    On ARM64 this may remove the JTRUE node and transform its associated
+//    relop into a JCMP node.
+//
+GenTree* Lowering::LowerJTrue(GenTreeOp* jtrue)
+{
+#ifdef _TARGET_ARM64_
+    GenTree* relop    = jtrue->gtGetOp1();
+    GenTree* relopOp2 = relop->gtOp.gtGetOp2();
+
+    if ((relop->gtNext == jtrue) && relopOp2->IsCnsIntOrI())
+    {
+        bool     useJCMP = false;
+        unsigned flags   = 0;
+
+        if (relop->OperIs(GT_EQ, GT_NE) && relopOp2->IsIntegralConst(0))
+        {
+            // Codegen will use cbz or cbnz in codegen which do not affect the flag register
+            flags   = relop->OperIs(GT_EQ) ? GTF_JCMP_EQ : 0;
+            useJCMP = true;
+        }
+        else if (relop->OperIs(GT_TEST_EQ, GT_TEST_NE) && isPow2(relopOp2->AsIntCon()->IconValue()))
+        {
+            // Codegen will use tbz or tbnz in codegen which do not affect the flag register
+            flags   = GTF_JCMP_TST | (relop->OperIs(GT_TEST_EQ) ? GTF_JCMP_EQ : 0);
+            useJCMP = true;
+        }
+
+        if (useJCMP)
+        {
+            relop->SetOper(GT_JCMP);
+            relop->gtFlags &= ~(GTF_JCMP_TST | GTF_JCMP_EQ);
+            relop->gtFlags |= flags;
+            relop->gtType = TYP_VOID;
+
+            relopOp2->SetContained();
+
+            BlockRange().Remove(jtrue);
+
+            assert(relop->gtNext == nullptr);
+            return nullptr;
+        }
+    }
+#endif // _TARGET_ARM64_
+
+    ContainCheckJTrue(jtrue);
+
+    assert(jtrue->gtNext == nullptr);
+    return nullptr;
 }
 
 // Lower "jmp <method>" tail call to insert PInvoke method epilog if required.
@@ -3818,7 +3975,16 @@ GenTree* Lowering::LowerVirtualStubCall(GenTreeCall* call)
             // on x64 we must materialize the target using specific registers.
             addr->gtRegNum = comp->virtualStubParamInfo->GetReg();
 
+// On ARM we must use a proper address in R12(thunk register) without dereferencing.
+// So for the jump we use the default register.
+// TODO: specifying register probably unnecessary for other platforms, too.
+#if !defined(_TARGET_UNIX_) && !defined(_TARGET_ARM_)
             indir->gtRegNum = REG_JUMP_THUNK_PARAM;
+#elif defined(_TARGET_ARM_)
+            // TODO-ARM-Cleanup: This is a temporarey hotfix to fix a regression observed in Linux/ARM.
+            if (!comp->IsTargetAbi(CORINFO_CORERT_ABI))
+                indir->gtRegNum = REG_JUMP_THUNK_PARAM;
+#endif
             indir->gtFlags |= GTF_IND_REQ_ADDR_IN_REG;
 #endif
             result = indir;
@@ -5346,6 +5512,7 @@ void Lowering::ContainCheckNode(GenTree* node)
         case GT_TEST_EQ:
         case GT_TEST_NE:
         case GT_CMP:
+        case GT_JCMP:
             ContainCheckCompare(node->AsOp());
             break;
 
@@ -5366,16 +5533,6 @@ void Lowering::ContainCheckNode(GenTree* node)
         case GT_XOR:
             ContainCheckBinary(node->AsOp());
             break;
-
-#ifdef _TARGET_XARCH_
-        case GT_NEG:
-            // Codegen of this tree node sets ZF and SF flags.
-            if (!varTypeIsFloating(node))
-            {
-                node->gtFlags |= GTF_ZSF_SET;
-            }
-            break;
-#endif // _TARGET_XARCH_
 
 #if defined(_TARGET_X86_)
         case GT_MUL_LONG:
@@ -5594,58 +5751,9 @@ void Lowering::ContainCheckRet(GenTreeOp* ret)
 void Lowering::ContainCheckJTrue(GenTreeOp* node)
 {
     // The compare does not need to be generated into a register.
-    GenTree* cmp                   = node->gtGetOp1();
-    cmp->gtLsraInfo.isNoRegCompare = true;
-
-#ifdef FEATURE_SIMD
-    assert(node->OperIs(GT_JTRUE));
-
-    // Say we have the following IR
-    //   simdCompareResult = GT_SIMD((In)Equality, v1, v2)
-    //   integerCompareResult = GT_EQ/NE(simdCompareResult, true/false)
-    //   GT_JTRUE(integerCompareResult)
-    //
-    // In this case we don't need to generate code for GT_EQ_/NE, since SIMD (In)Equality
-    // intrinsic will set or clear the Zero flag.
-    genTreeOps cmpOper = cmp->OperGet();
-    if (cmpOper == GT_EQ || cmpOper == GT_NE)
-    {
-        GenTree* cmpOp1 = cmp->gtGetOp1();
-        GenTree* cmpOp2 = cmp->gtGetOp2();
-
-        if (cmpOp1->IsSIMDEqualityOrInequality() && (cmpOp2->IsIntegralConst(0) || cmpOp2->IsIntegralConst(1)))
-        {
-            // We always generate code for a SIMD equality comparison, though it produces no value.
-            // Neither the GT_JTRUE nor the immediate need to be evaluated.
-            MakeSrcContained(cmp, cmpOp2);
-            cmpOp1->gtLsraInfo.isNoRegCompare = true;
-            // We have to reverse compare oper in the following cases:
-            // 1) SIMD Equality: Sets Zero flag on equal otherwise clears it.
-            //    Therefore, if compare oper is == or != against false(0), we will
-            //    be checking opposite of what is required.
-            //
-            // 2) SIMD inEquality: Clears Zero flag on true otherwise sets it.
-            //    Therefore, if compare oper is == or != against true(1), we will
-            //    be checking opposite of what is required.
-            GenTreeSIMD* simdNode = cmpOp1->AsSIMD();
-            if (simdNode->gtSIMDIntrinsicID == SIMDIntrinsicOpEquality)
-            {
-                if (cmpOp2->IsIntegralConst(0))
-                {
-                    cmp->SetOper(GenTree::ReverseRelop(cmpOper));
-                }
-            }
-            else
-            {
-                assert(simdNode->gtSIMDIntrinsicID == SIMDIntrinsicOpInEquality);
-                if (cmpOp2->IsIntegralConst(1))
-                {
-                    cmp->SetOper(GenTree::ReverseRelop(cmpOper));
-                }
-            }
-        }
-    }
-#endif // FEATURE_SIMD
+    GenTree* cmp = node->gtGetOp1();
+    cmp->gtType  = TYP_VOID;
+    cmp->gtFlags |= GTF_SET_FLAGS;
 }
 
 #endif // !LEGACY_BACKEND
