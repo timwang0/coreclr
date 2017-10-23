@@ -14,7 +14,6 @@
 
 using System.Reflection;
 using System.Diagnostics;
-using System.Diagnostics.Contracts;
 using System.Runtime.Serialization;
 
 namespace System.Globalization
@@ -52,8 +51,8 @@ namespace System.Globalization
             ~(CompareOptions.IgnoreCase | CompareOptions.IgnoreSymbols | CompareOptions.IgnoreNonSpace |
               CompareOptions.IgnoreWidth | CompareOptions.IgnoreKanaType);
 
-            // Mask used to check if we have the right flags.
-        private const CompareOptions ValidSortkeyCtorMaskOffFlags = 
+        // Mask used to check if we have the right flags.
+        private const CompareOptions ValidSortkeyCtorMaskOffFlags =
             ~(CompareOptions.IgnoreCase | CompareOptions.IgnoreSymbols | CompareOptions.IgnoreNonSpace |
               CompareOptions.IgnoreWidth | CompareOptions.IgnoreKanaType | CompareOptions.StringSort);
 
@@ -62,12 +61,11 @@ namespace System.Globalization
         // ie: en-US would have an en-US sort.  For haw-US (custom), then we serialize it as haw-US.
         // The interesting part is that since haw-US doesn't have its own sort, it has to point at another
         // locale, which is what SCOMPAREINFO does.
-
         [OptionalField(VersionAdded = 2)]
         private string m_name;  // The name used to construct this CompareInfo. Do not rename (binary serialization)
 
         [NonSerialized]
-        private string _sortName; // The name that defines our behavior.
+        private string _sortName; // The name that defines our behavior
 
         [OptionalField(VersionAdded = 3)]
         private SortVersion m_SortVersion; // Do not rename (binary serialization)
@@ -75,7 +73,7 @@ namespace System.Globalization
         // _invariantMode is defined for the perf reason as accessing the instance field is faster than access the static property GlobalizationMode.Invariant
         [NonSerialized]
         private readonly bool _invariantMode = GlobalizationMode.Invariant;
-        
+
         private int culture; // Do not rename (binary serialization). The fields sole purpose is to support Desktop serialization.
 
         internal CompareInfo(CultureInfo culture)
@@ -103,11 +101,10 @@ namespace System.Globalization
             {
                 throw new ArgumentNullException(nameof(assembly));
             }
-            if (assembly != typeof(Object).Module.Assembly) 
+            if (assembly != typeof(Object).Module.Assembly)
             {
                 throw new ArgumentException(SR.Argument_OnlyMscorlib);
             }
-            Contract.EndContractBlock();
 
             return GetCompareInfo(culture);
         }
@@ -130,7 +127,6 @@ namespace System.Globalization
             {
                 throw new ArgumentNullException(name == null ? nameof(name) : nameof(assembly));
             }
-            Contract.EndContractBlock();
 
             if (assembly != typeof(Object).Module.Assembly)
             {
@@ -176,7 +172,6 @@ namespace System.Globalization
             {
                 throw new ArgumentNullException(nameof(name));
             }
-            Contract.EndContractBlock();
 
             return CultureInfo.GetCultureInfo(name).CompareInfo;
         }
@@ -193,7 +188,7 @@ namespace System.Globalization
 
         public static unsafe bool IsSortable(string text)
         {
-            if (text == null) 
+            if (text == null)
             {
                 // A null param is invalid here.
                 throw new ArgumentNullException(nameof(text));
@@ -209,13 +204,12 @@ namespace System.Globalization
             {
                 return true;
             }
-            
+
             fixed (char *pChar = text)
             {
                 return IsSortable(pChar, text.Length);
             }
         }
-
 
         [OnDeserializing]
         private void OnDeserializing(StreamingContext ctx)
@@ -223,7 +217,7 @@ namespace System.Globalization
             m_name = null;
         }
 
-        void IDeserializationCallback.OnDeserialization(Object sender)
+        void IDeserializationCallback.OnDeserialization(object sender)
         {
             OnDeserialized();
         }
@@ -254,7 +248,7 @@ namespace System.Globalization
         {
             // This is merely for serialization compatibility with Whidbey/Orcas, it can go away when we don't want that compat any more.
             culture = CultureInfo.GetCultureInfo(this.Name).LCID; // This is the lcid of the constructing culture (still have to dereference to get target sort)
-            Contract.Assert(m_name != null, "CompareInfo.OnSerializing - expected m_name to be set already");
+            Debug.Assert(m_name != null, "CompareInfo.OnSerializing - expected m_name to be set already");
         }
 
         ///////////////////////////----- Name -----/////////////////////////////////
@@ -346,9 +340,84 @@ namespace System.Globalization
                 return String.CompareOrdinal(string1, string2);
             }
 
-            return CompareString(string1, 0, string1.Length, string2, 0, string2.Length, options);
+            return CompareString(string1.AsReadOnlySpan(), string2.AsReadOnlySpan(), options);
         }
 
+        // TODO https://github.com/dotnet/coreclr/issues/13827:
+        // This method shouldn't be necessary, as we should be able to just use the overload
+        // that takes two spans.  But due to this issue, that's adding significant overhead.
+        internal unsafe int Compare(ReadOnlySpan<char> string1, string string2, CompareOptions options)
+        {
+            if (options == CompareOptions.OrdinalIgnoreCase)
+            {
+                return CompareOrdinalIgnoreCase(string1, string2.AsReadOnlySpan());
+            }
+
+            // Verify the options before we do any real comparison.
+            if ((options & CompareOptions.Ordinal) != 0)
+            {
+                if (options != CompareOptions.Ordinal)
+                {
+                    throw new ArgumentException(SR.Argument_CompareOptionOrdinal, nameof(options));
+                }
+
+                return string.CompareOrdinal(string1, string2.AsReadOnlySpan());
+            }
+
+            if ((options & ValidCompareMaskOffFlags) != 0)
+            {
+                throw new ArgumentException(SR.Argument_InvalidFlag, nameof(options));
+            }
+
+            // null sorts less than any other string.
+            if (string2 == null)
+            {
+                return 1;
+            }
+
+            if (_invariantMode)
+            {
+                return (options & CompareOptions.IgnoreCase) != 0 ?
+                    CompareOrdinalIgnoreCase(string1, string2.AsReadOnlySpan()) :
+                    string.CompareOrdinal(string1, string2.AsReadOnlySpan());
+            }
+
+            return CompareString(string1, string2, options);
+        }
+
+        // TODO https://github.com/dotnet/corefx/issues/21395: Expose this publicly?
+        internal unsafe virtual int Compare(ReadOnlySpan<char> string1, ReadOnlySpan<char> string2, CompareOptions options)
+        {
+            if (options == CompareOptions.OrdinalIgnoreCase)
+            {
+                return CompareOrdinalIgnoreCase(string1, string2);
+            }
+
+            // Verify the options before we do any real comparison.
+            if ((options & CompareOptions.Ordinal) != 0)
+            {
+                if (options != CompareOptions.Ordinal)
+                {
+                    throw new ArgumentException(SR.Argument_CompareOptionOrdinal, nameof(options));
+                }
+
+                return string.CompareOrdinal(string1, string2);
+            }
+
+            if ((options & ValidCompareMaskOffFlags) != 0)
+            {
+                throw new ArgumentException(SR.Argument_InvalidFlag, nameof(options));
+            }
+
+            if (_invariantMode)
+            {
+                return (options & CompareOptions.IgnoreCase) != 0 ?
+                    CompareOrdinalIgnoreCase(string1, string2) :
+                    string.CompareOrdinal(string1, string2);
+            }
+
+            return CompareString(string1, string2, options);
+        }
 
         ////////////////////////////////////////////////////////////////////////
         //
@@ -451,10 +520,11 @@ namespace System.Globalization
 
                 return CompareOrdinal(string1, offset1, length1, string2, offset2, length2);
             }
-            
-            return CompareString(string1, offset1, length1,
-                                 string2, offset2, length2,
-                                 options);
+
+            return CompareString(
+                string1.AsReadOnlySpan().Slice(offset1, length1),
+                string2.AsReadOnlySpan().Slice(offset2, length2),
+                options);
         }
 
         private static int CompareOrdinal(string string1, int offset1, int length1, string string2, int offset2, int length2)
@@ -477,14 +547,19 @@ namespace System.Globalization
         {
             Debug.Assert(indexA + lengthA <= strA.Length);
             Debug.Assert(indexB + lengthB <= strB.Length);
+            return CompareOrdinalIgnoreCase(strA.AsReadOnlySpan().Slice(indexA, lengthA), strB.AsReadOnlySpan().Slice(indexB, lengthB));
+        }
 
-            int length = Math.Min(lengthA, lengthB);
+        internal static unsafe int CompareOrdinalIgnoreCase(ReadOnlySpan<char> strA, ReadOnlySpan<char> strB)
+        {
+            int length = Math.Min(strA.Length, strB.Length);
             int range = length;
 
-            fixed (char* ap = strA) fixed (char* bp = strB)
+            fixed (char* ap = &strA.DangerousGetPinnableReference())
+            fixed (char* bp = &strB.DangerousGetPinnableReference())
             {
-                char* a = ap + indexA;
-                char* b = bp + indexB;
+                char* a = ap;
+                char* b = bp;
 
                 // in InvariantMode we support all range and not only the ascii characters.
                 char maxChar = (char) (GlobalizationMode.Invariant ? 0xFFFF : 0x80);
@@ -502,8 +577,8 @@ namespace System.Globalization
                     }
 
                     // uppercase both chars - notice that we need just one compare per char
-                    if ((uint)(charA - 'a') <= (uint)('z' - 'a')) charA -= 0x20;
-                    if ((uint)(charB - 'a') <= (uint)('z' - 'a')) charB -= 0x20;
+                    if ((uint)(charA - 'a') <= 'z' - 'a') charA -= 0x20;
+                    if ((uint)(charB - 'a') <= 'z' - 'a') charB -= 0x20;
 
                     // Return the (case-insensitive) difference between them.
                     if (charA != charB)
@@ -515,13 +590,13 @@ namespace System.Globalization
                 }
 
                 if (length == 0)
-                    return lengthA - lengthB;
+                    return strA.Length - strB.Length;
 
                 Debug.Assert(!GlobalizationMode.Invariant);
 
                 range -= length;
 
-                return CompareStringOrdinalIgnoreCase(a, lengthA - range, b, lengthB - range);
+                return CompareStringOrdinalIgnoreCase(a, strA.Length - range, b, strB.Length - range);
             }
         }
 
@@ -540,7 +615,6 @@ namespace System.Globalization
                 throw new ArgumentNullException((source == null ? nameof(source) : nameof(prefix)),
                     SR.ArgumentNull_String);
             }
-            Contract.EndContractBlock();
 
             if (prefix.Length == 0)
             {
@@ -595,7 +669,6 @@ namespace System.Globalization
                 throw new ArgumentNullException((source == null ? nameof(source) : nameof(suffix)),
                     SR.ArgumentNull_String);
             }
-            Contract.EndContractBlock();
 
             if (suffix.Length == 0)
             {
@@ -654,7 +727,6 @@ namespace System.Globalization
         {
             if (source == null)
                 throw new ArgumentNullException(nameof(source));
-            Contract.EndContractBlock();
 
             return IndexOf(source, value, 0, source.Length, CompareOptions.None);
         }
@@ -664,7 +736,6 @@ namespace System.Globalization
         {
             if (source == null)
                 throw new ArgumentNullException(nameof(source));
-            Contract.EndContractBlock();
 
             return IndexOf(source, value, 0, source.Length, CompareOptions.None);
         }
@@ -674,7 +745,6 @@ namespace System.Globalization
         {
             if (source == null)
                 throw new ArgumentNullException(nameof(source));
-            Contract.EndContractBlock();
 
             return IndexOf(source, value, 0, source.Length, options);
         }
@@ -684,7 +754,6 @@ namespace System.Globalization
         {
             if (source == null)
                 throw new ArgumentNullException(nameof(source));
-            Contract.EndContractBlock();
 
             return IndexOf(source, value, 0, source.Length, options);
         }
@@ -693,7 +762,6 @@ namespace System.Globalization
         {
             if (source == null)
                 throw new ArgumentNullException(nameof(source));
-            Contract.EndContractBlock();
 
             return IndexOf(source, value, startIndex, source.Length - startIndex, CompareOptions.None);
         }
@@ -702,7 +770,6 @@ namespace System.Globalization
         {
             if (source == null)
                 throw new ArgumentNullException(nameof(source));
-            Contract.EndContractBlock();
 
             return IndexOf(source, value, startIndex, source.Length - startIndex, CompareOptions.None);
         }
@@ -711,7 +778,6 @@ namespace System.Globalization
         {
             if (source == null)
                 throw new ArgumentNullException(nameof(source));
-            Contract.EndContractBlock();
 
             return IndexOf(source, value, startIndex, source.Length - startIndex, options);
         }
@@ -721,7 +787,6 @@ namespace System.Globalization
         {
             if (source == null)
                 throw new ArgumentNullException(nameof(source));
-            Contract.EndContractBlock();
 
             return IndexOf(source, value, startIndex, source.Length - startIndex, options);
         }
@@ -749,7 +814,6 @@ namespace System.Globalization
 
             if (count < 0 || startIndex > source.Length - count)
                 throw new ArgumentOutOfRangeException(nameof(count), SR.ArgumentOutOfRange_Count);
-            Contract.EndContractBlock();
 
             if (options == CompareOptions.OrdinalIgnoreCase)
             {
@@ -779,7 +843,6 @@ namespace System.Globalization
             {
                 throw new ArgumentOutOfRangeException(nameof(startIndex), SR.ArgumentOutOfRange_Index);
             }
-            Contract.EndContractBlock();
 
             // In Everett we used to return -1 for empty string even if startIndex is negative number so we keeping same behavior here.
             // We return 0 if both source and value are empty strings for Everett compatibility too.
@@ -891,7 +954,6 @@ namespace System.Globalization
         {
             if (source == null)
                 throw new ArgumentNullException(nameof(source));
-            Contract.EndContractBlock();
 
             // Can't start at negative index, so make sure we check for the length == 0 case.
             return LastIndexOf(source, value, source.Length - 1, source.Length, CompareOptions.None);
@@ -902,7 +964,6 @@ namespace System.Globalization
         {
             if (source == null)
                 throw new ArgumentNullException(nameof(source));
-            Contract.EndContractBlock();
 
             // Can't start at negative index, so make sure we check for the length == 0 case.
             return LastIndexOf(source, value, source.Length - 1,
@@ -914,7 +975,6 @@ namespace System.Globalization
         {
             if (source == null)
                 throw new ArgumentNullException(nameof(source));
-            Contract.EndContractBlock();
 
             // Can't start at negative index, so make sure we check for the length == 0 case.
             return LastIndexOf(source, value, source.Length - 1,
@@ -925,7 +985,6 @@ namespace System.Globalization
         {
             if (source == null)
                 throw new ArgumentNullException(nameof(source));
-            Contract.EndContractBlock();
 
             // Can't start at negative index, so make sure we check for the length == 0 case.
             return LastIndexOf(source, value, source.Length - 1, source.Length, options);
@@ -971,7 +1030,6 @@ namespace System.Globalization
             // Verify Arguments
             if (source == null)
                 throw new ArgumentNullException(nameof(source));
-            Contract.EndContractBlock();
 
             // Validate CompareOptions
             // Ordinal can't be selected with other flags
@@ -1019,7 +1077,6 @@ namespace System.Globalization
                 throw new ArgumentNullException(nameof(source));
             if (value == null)
                 throw new ArgumentNullException(nameof(value));
-            Contract.EndContractBlock();
 
             // Validate CompareOptions
             // Ordinal can't be selected with other flags
@@ -1176,7 +1233,6 @@ namespace System.Globalization
             {
                 throw new ArgumentException(SR.Argument_InvalidFlag, nameof(options));
             }
-            Contract.EndContractBlock();
 
             return GetHashCodeOfStringCore(source, options);
         }

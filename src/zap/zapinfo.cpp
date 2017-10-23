@@ -3107,6 +3107,16 @@ BOOL ZapInfo::areTypesEquivalent(CORINFO_CLASS_HANDLE cls1, CORINFO_CLASS_HANDLE
     return m_pEEJitInfo->areTypesEquivalent(cls1, cls2);
 }
 
+TypeCompareState ZapInfo::compareTypesForCast(CORINFO_CLASS_HANDLE fromClass, CORINFO_CLASS_HANDLE toClass)
+{
+    return m_pEEJitInfo->compareTypesForCast(fromClass, toClass);
+}
+
+TypeCompareState ZapInfo::compareTypesForEquality(CORINFO_CLASS_HANDLE cls1, CORINFO_CLASS_HANDLE cls2)
+{
+    return m_pEEJitInfo->compareTypesForEquality(cls1, cls2);
+}
+
 CORINFO_CLASS_HANDLE ZapInfo::mergeClasses(
                                 CORINFO_CLASS_HANDLE cls1,
                                 CORINFO_CLASS_HANDLE cls2)
@@ -3702,6 +3712,12 @@ CORINFO_METHOD_HANDLE ZapInfo::resolveVirtualMethod(
         )
 {
     return m_pEEJitInfo->resolveVirtualMethod(virtualMethod, implementingClass, ownerType);
+}
+
+CORINFO_CLASS_HANDLE ZapInfo::getDefaultEqualityComparerClass(
+    CORINFO_CLASS_HANDLE elemType)
+{
+    return m_pEEJitInfo->getDefaultEqualityComparerClass(elemType);
 }
 
 void ZapInfo::expandRawHandleIntrinsic(

@@ -4,7 +4,6 @@
 
 using System.Collections;
 using System.Diagnostics;
-using System.Diagnostics.Contracts;
 using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Runtime.ConstrainedExecution;
@@ -20,9 +19,8 @@ namespace System
 
         private unsafe static int CompareOrdinalIgnoreCaseHelper(String strA, String strB)
         {
-            Contract.Requires(strA != null);
-            Contract.Requires(strB != null);
-            Contract.EndContractBlock();
+            Debug.Assert(strA != null);
+            Debug.Assert(strB != null);
             int length = Math.Min(strA.Length, strB.Length);
 
             fixed (char* ap = &strA._firstChar) fixed (char* bp = &strB._firstChar)
@@ -76,9 +74,9 @@ namespace System
 
         private unsafe static bool EqualsHelper(String strA, String strB)
         {
-            Contract.Requires(strA != null);
-            Contract.Requires(strB != null);
-            Contract.Requires(strA.Length == strB.Length);
+            Debug.Assert(strA != null);
+            Debug.Assert(strB != null);
+            Debug.Assert(strA.Length == strB.Length);
 
             int length = strA.Length;
 
@@ -133,10 +131,9 @@ namespace System
 
         private unsafe static bool EqualsIgnoreCaseAsciiHelper(String strA, String strB)
         {
-            Contract.Requires(strA != null);
-            Contract.Requires(strB != null);
-            Contract.Requires(strA.Length == strB.Length);
-            Contract.EndContractBlock();
+            Debug.Assert(strA != null);
+            Debug.Assert(strB != null);
+            Debug.Assert(strA.Length == strB.Length);
             int length = strA.Length;
 
             fixed (char* ap = &strA._firstChar) fixed (char* bp = &strB._firstChar)
@@ -172,9 +169,9 @@ namespace System
 
         private unsafe static bool StartsWithOrdinalHelper(String str, String startsWith)
         {
-            Contract.Requires(str != null);
-            Contract.Requires(startsWith != null);
-            Contract.Requires(str.Length >= startsWith.Length);
+            Debug.Assert(str != null);
+            Debug.Assert(startsWith != null);
+            Debug.Assert(str.Length >= startsWith.Length);
 
             int length = startsWith.Length;
 
@@ -222,13 +219,13 @@ namespace System
             }
         }
 
-        private unsafe static int CompareOrdinalHelper(String strA, String strB)
+        private static unsafe int CompareOrdinalHelper(String strA, String strB)
         {
-            Contract.Requires(strA != null);
-            Contract.Requires(strB != null);
+            Debug.Assert(strA != null);
+            Debug.Assert(strB != null);
 
             // NOTE: This may be subject to change if eliminating the check
-            // in the callers makes them small enough to be inlined by the JIT
+            // in the callers makes them small enough to be inlined
             Debug.Assert(strA._firstChar == strB._firstChar,
                 "For performance reasons, callers of this method should " +
                 "check/short-circuit beforehand if the first char is the same.");
@@ -346,7 +343,6 @@ namespace System
         // to determine whether it is lexicographically less, equal, or greater, and then returns
         // either a negative integer, 0, or a positive integer; respectively.
         //
-        [Pure]
         public static int Compare(String strA, String strB)
         {
             return Compare(strA, strB, StringComparison.CurrentCulture);
@@ -358,7 +354,6 @@ namespace System
         // negative integer, 0, or a positive integer is returned; respectively.
         // The case-sensitive option is set by ignoreCase
         //
-        [Pure]
         public static int Compare(String strA, String strB, bool ignoreCase)
         {
             var comparisonType = ignoreCase ? StringComparison.CurrentCultureIgnoreCase : StringComparison.CurrentCulture;
@@ -368,7 +363,6 @@ namespace System
 
         // Provides a more flexible function for string comparision. See StringComparison 
         // for meaning of different comparisonType.
-        [Pure]
         public static int Compare(String strA, String strB, StringComparison comparisonType)
         {
             // Single comparison to check if comparisonType is within [CurrentCulture .. OrdinalIgnoreCase]
@@ -376,7 +370,6 @@ namespace System
             {
                 throw new ArgumentException(SR.NotSupported_StringComparison, nameof(comparisonType));
             }
-            Contract.EndContractBlock();
 
             if (object.ReferenceEquals(strA, strB))
             {
@@ -436,14 +429,12 @@ namespace System
         // to determine whether it is lexicographically less, equal, or greater, and then a
         // negative integer, 0, or a positive integer is returned; respectively.
         //
-        [Pure]
         public static int Compare(String strA, String strB, CultureInfo culture, CompareOptions options)
         {
             if (culture == null)
             {
                 throw new ArgumentNullException(nameof(culture));
             }
-            Contract.EndContractBlock();
 
             return culture.CompareInfo.Compare(strA, strB, options);
         }
@@ -456,7 +447,6 @@ namespace System
         // The case-sensitive option is set by ignoreCase, and the culture is set
         // by culture
         //
-        [Pure]
         public static int Compare(String strA, String strB, bool ignoreCase, CultureInfo culture)
         {
             var options = ignoreCase ? CompareOptions.IgnoreCase : CompareOptions.None;
@@ -467,7 +457,6 @@ namespace System
         // at indexA of length count is compared with the substring of strB
         // beginning at indexB of the same length.
         //
-        [Pure]
         public static int Compare(String strA, int indexA, String strB, int indexB, int length)
         {
             // NOTE: It's important we call the boolean overload, and not the StringComparison
@@ -479,7 +468,6 @@ namespace System
         // at indexA of length count is compared with the substring of strB
         // beginning at indexB of the same length.  Case sensitivity is determined by the ignoreCase boolean.
         //
-        [Pure]
         public static int Compare(String strA, int indexA, String strB, int indexB, int length, bool ignoreCase)
         {
             // Ideally we would just forward to the string.Compare overload that takes
@@ -518,7 +506,6 @@ namespace System
         // beginning at indexB of the same length.  Case sensitivity is determined by the ignoreCase boolean,
         // and the culture is set by culture.
         //
-        [Pure]
         public static int Compare(String strA, int indexA, String strB, int indexB, int length, bool ignoreCase, CultureInfo culture)
         {
             var options = ignoreCase ? CompareOptions.IgnoreCase : CompareOptions.None;
@@ -530,14 +517,12 @@ namespace System
         // at indexA of length length is compared with the substring of strB
         // beginning at indexB of the same length.
         //
-        [Pure]
         public static int Compare(String strA, int indexA, String strB, int indexB, int length, CultureInfo culture, CompareOptions options)
         {
             if (culture == null)
             {
                 throw new ArgumentNullException(nameof(culture));
             }
-            Contract.EndContractBlock();
 
             int lengthA = length;
             int lengthB = length;
@@ -555,14 +540,12 @@ namespace System
             return culture.CompareInfo.Compare(strA, indexA, lengthA, strB, indexB, lengthB, options);
         }
 
-        [Pure]
         public static int Compare(String strA, int indexA, String strB, int indexB, int length, StringComparison comparisonType)
         {
             if (comparisonType < StringComparison.CurrentCulture || comparisonType > StringComparison.OrdinalIgnoreCase)
             {
                 throw new ArgumentException(SR.NotSupported_StringComparison, nameof(comparisonType));
             }
-            Contract.EndContractBlock();
 
             if (strA == null || strB == null)
             {
@@ -627,7 +610,6 @@ namespace System
 
         // Compares strA and strB using an ordinal (code-point) comparison.
         //
-        [Pure]
         public static int CompareOrdinal(String strA, String strB)
         {
             if (object.ReferenceEquals(strA, strB))
@@ -655,10 +637,27 @@ namespace System
             return CompareOrdinalHelper(strA, strB);
         }
 
+        // TODO https://github.com/dotnet/corefx/issues/21395: Expose this publicly?
+        internal static int CompareOrdinal(ReadOnlySpan<char> strA, ReadOnlySpan<char> strB)
+        {
+            // TODO: This needs to be optimized / unrolled.  It can't just use CompareOrdinalHelper(str, str)
+            // (changed to accept spans) because its implementation is based on a string layout,
+            // in a way that doesn't work when there isn't guaranteed to be a null terminator.
+
+            int minLength = Math.Min(strA.Length, strB.Length);
+            for (int i = 0; i < minLength; i++)
+            {
+                if (strA[i] != strB[i])
+                {
+                    return strA[i] - strB[i];
+                }
+            }
+
+            return strA.Length - strB.Length;
+        }
 
         // Compares strA and strB using an ordinal (code-point) comparison.
         //
-        [Pure]
         public static int CompareOrdinal(String strA, int indexA, String strB, int indexB, int length)
         {
             if (strA == null || strB == null)
@@ -707,7 +706,6 @@ namespace System
         // indicates the relationship. This method returns a value less than 0 if this is less than value, 0
         // if this is equal to value, or a value greater than 0 if this is greater than value.
         //
-        [Pure]
         public int CompareTo(Object value)
         {
             if (value == null)
@@ -727,7 +725,6 @@ namespace System
 
         // Determines the sorting relation of StrB to the current instance.
         //
-        [Pure]
         public int CompareTo(String strB)
         {
             return string.Compare(this, strB, StringComparison.CurrentCulture);
@@ -738,13 +735,11 @@ namespace System
         // The case-sensitive and culture-sensitive option is set by options,
         // and the default culture is used.
         //        
-        [Pure]
         public Boolean EndsWith(String value)
         {
             return EndsWith(value, StringComparison.CurrentCulture);
         }
 
-        [Pure]
         public Boolean EndsWith(String value, StringComparison comparisonType)
         {
             if ((Object)value == null)
@@ -756,7 +751,6 @@ namespace System
             {
                 throw new ArgumentException(SR.NotSupported_StringComparison, nameof(comparisonType));
             }
-            Contract.EndContractBlock();
 
             if ((Object)this == (Object)value)
             {
@@ -792,14 +786,12 @@ namespace System
             }
         }
 
-        [Pure]
         public Boolean EndsWith(String value, Boolean ignoreCase, CultureInfo culture)
         {
             if (null == value)
             {
                 throw new ArgumentNullException(nameof(value));
             }
-            Contract.EndContractBlock();
 
             if ((object)this == (object)value)
             {
@@ -815,7 +807,6 @@ namespace System
             return referenceCulture.CompareInfo.IsSuffix(this, value, ignoreCase ? CompareOptions.IgnoreCase : CompareOptions.None);
         }
 
-        [Pure]
         public bool EndsWith(char value)
         {
             int thisLen = Length;
@@ -839,7 +830,6 @@ namespace System
         }
 
         // Determines whether two strings match.
-        [Pure]
         public bool Equals(String value)
         {
             if (object.ReferenceEquals(this, value))
@@ -858,12 +848,10 @@ namespace System
             return EqualsHelper(this, value);
         }
 
-        [Pure]
         public bool Equals(String value, StringComparison comparisonType)
         {
             if (comparisonType < StringComparison.CurrentCulture || comparisonType > StringComparison.OrdinalIgnoreCase)
                 throw new ArgumentException(SR.NotSupported_StringComparison, nameof(comparisonType));
-            Contract.EndContractBlock();
 
             if ((Object)this == (Object)value)
             {
@@ -913,7 +901,6 @@ namespace System
 
 
         // Determines whether two Strings match.
-        [Pure]
         public static bool Equals(String a, String b)
         {
             if ((Object)a == (Object)b)
@@ -929,12 +916,10 @@ namespace System
             return EqualsHelper(a, b);
         }
 
-        [Pure]
         public static bool Equals(String a, String b, StringComparison comparisonType)
         {
             if (comparisonType < StringComparison.CurrentCulture || comparisonType > StringComparison.OrdinalIgnoreCase)
                 throw new ArgumentException(SR.NotSupported_StringComparison, nameof(comparisonType));
-            Contract.EndContractBlock();
 
             if ((Object)a == (Object)b)
             {
@@ -1070,18 +1055,15 @@ namespace System
 
         // Determines whether a specified string is a prefix of the current instance
         //
-        [Pure]
         public Boolean StartsWith(String value)
         {
             if ((Object)value == null)
             {
                 throw new ArgumentNullException(nameof(value));
             }
-            Contract.EndContractBlock();
             return StartsWith(value, StringComparison.CurrentCulture);
         }
 
-        [Pure]
         public Boolean StartsWith(String value, StringComparison comparisonType)
         {
             if ((Object)value == null)
@@ -1093,7 +1075,6 @@ namespace System
             {
                 throw new ArgumentException(SR.NotSupported_StringComparison, nameof(comparisonType));
             }
-            Contract.EndContractBlock();
 
             if ((Object)this == (Object)value)
             {
@@ -1141,14 +1122,12 @@ namespace System
             }
         }
 
-        [Pure]
         public Boolean StartsWith(String value, Boolean ignoreCase, CultureInfo culture)
         {
             if (null == value)
             {
                 throw new ArgumentNullException(nameof(value));
             }
-            Contract.EndContractBlock();
 
             if ((object)this == (object)value)
             {
@@ -1164,7 +1143,6 @@ namespace System
             return referenceCulture.CompareInfo.IsPrefix(this, value, ignoreCase ? CompareOptions.IgnoreCase : CompareOptions.None);
         }
 
-        [Pure]
         public bool StartsWith(char value) => Length != 0 && _firstChar == value;
     }
 }

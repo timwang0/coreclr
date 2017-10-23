@@ -58,7 +58,18 @@ void LinearScan::TreeNodeInfoInit(GenTree* tree)
     }
 
     // Set the default dstCount. This may be modified below.
-    info->dstCount = tree->IsValue() ? 1 : 0;
+    if (tree->IsValue())
+    {
+        info->dstCount = 1;
+        if (tree->IsUnusedValue())
+        {
+            info->isLocalDefUse = true;
+        }
+    }
+    else
+    {
+        info->dstCount = 0;
+    }
 
     switch (tree->OperGet())
     {
@@ -198,8 +209,6 @@ void LinearScan::TreeNodeInfoInit(GenTree* tree)
             break;
 
         case GT_ASG:
-        case GT_ASG_ADD:
-        case GT_ASG_SUB:
             noway_assert(!"We should never hit any assignment operator in lowering");
             info->srcCount = 0;
             break;
@@ -354,6 +363,7 @@ void LinearScan::TreeNodeInfoInit(GenTree* tree)
         case GT_GT:
         case GT_TEST_EQ:
         case GT_TEST_NE:
+        case GT_JCMP:
             TreeNodeInfoInitCmp(tree);
             break;
 
@@ -364,16 +374,46 @@ void LinearScan::TreeNodeInfoInit(GenTree* tree)
             break;
 
         case GT_CMPXCHG:
-            info->srcCount = 3;
+        {
+            GenTreeCmpXchg* cmpXchgNode = tree->AsCmpXchg();
+            info->srcCount              = cmpXchgNode->gtOpComparand->isContained() ? 2 : 3;
             assert(info->dstCount == 1);
 
-            // TODO-ARM64-NYI
-            NYI("CMPXCHG");
-            break;
+            info->internalIntCount = 1;
+
+            // For ARMv8 exclusives the lifetime of the addr and data must be extended because
+            // it may be used used multiple during retries
+            cmpXchgNode->gtOpLocation->gtLsraInfo.isDelayFree = true;
+            cmpXchgNode->gtOpValue->gtLsraInfo.isDelayFree    = true;
+            if (!cmpXchgNode->gtOpComparand->isContained())
+            {
+                cmpXchgNode->gtOpComparand->gtLsraInfo.isDelayFree = true;
+            }
+            info->hasDelayFreeSrc = true;
+
+            // Internals may not collide with target
+            info->isInternalRegDelayFree = true;
+        }
+        break;
 
         case GT_LOCKADD:
-            info->srcCount = tree->gtOp.gtOp2->isContained() ? 1 : 2;
-            assert(info->dstCount == 1);
+        case GT_XADD:
+        case GT_XCHG:
+            assert(info->dstCount == (tree->TypeGet() == TYP_VOID) ? 0 : 1);
+            info->srcCount         = tree->gtOp.gtOp2->isContained() ? 1 : 2;
+            info->internalIntCount = (tree->OperGet() == GT_XCHG) ? 1 : 2;
+
+            // For ARMv8 exclusives the lifetime of the addr and data must be extended because
+            // it may be used used multiple during retries
+            tree->gtOp.gtOp1->gtLsraInfo.isDelayFree = true;
+            if (!tree->gtOp.gtOp2->isContained())
+            {
+                tree->gtOp.gtOp2->gtLsraInfo.isDelayFree = true;
+            }
+            info->hasDelayFreeSrc = true;
+
+            // Internals may not collide with target
+            info->isInternalRegDelayFree = true;
             break;
 
         case GT_PUTARG_STK:
@@ -666,6 +706,8 @@ void LinearScan::TreeNodeInfoInit(GenTree* tree)
     }
     // We need to be sure that we've set info->srcCount and info->dstCount appropriately
     assert((info->dstCount < 2) || tree->IsMultiRegCall());
+    assert(info->isLocalDefUse == (tree->IsValue() && tree->IsUnusedValue()));
+    assert(!tree->IsUnusedValue() || (info->dstCount != 0));
 }
 
 //------------------------------------------------------------------------

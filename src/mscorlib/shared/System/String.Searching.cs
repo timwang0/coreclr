@@ -2,21 +2,18 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-using System.Diagnostics.Contracts;
 using System.Globalization;
-using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 
 namespace System
 {
     public partial class String
     {
-        [Pure]
         public bool Contains(string value)
         {
             return (IndexOf(value, StringComparison.Ordinal) >= 0);
         }
 
-        [Pure]
         public bool Contains(string value, StringComparison comparisonType)
         {
             return (IndexOf(value, comparisonType) >= 0);
@@ -25,19 +22,16 @@ namespace System
         // Returns the index of the first occurrence of a specified character in the current instance.
         // The search starts at startIndex and runs thorough the next count characters.
         //
-        [Pure]
         public int IndexOf(char value)
         {
             return IndexOf(value, 0, this.Length);
         }
 
-        [Pure]
         public int IndexOf(char value, int startIndex)
         {
             return IndexOf(value, startIndex, this.Length - startIndex);
         }
 
-        [Pure]
         public unsafe int IndexOf(char value, int startIndex, int count)
         {
             if (startIndex < 0 || startIndex > Length)
@@ -81,37 +75,28 @@ namespace System
         }
 
         // Returns the index of the first occurrence of any specified character in the current instance.
-        // The search starts at startIndex and runs to startIndex + count -1.
+        // The search starts at startIndex and runs to startIndex + count - 1.
         //
-        [Pure]
         public int IndexOfAny(char[] anyOf)
         {
             return IndexOfAny(anyOf, 0, this.Length);
         }
 
-        [Pure]
         public int IndexOfAny(char[] anyOf, int startIndex)
         {
             return IndexOfAny(anyOf, startIndex, this.Length - startIndex);
         }
 
-        [Pure]
         public int IndexOfAny(char[] anyOf, int startIndex, int count)
         {
             if (anyOf == null)
-            {
                 throw new ArgumentNullException(nameof(anyOf));
-            }
 
             if ((uint)startIndex > (uint)Length)
-            {
                 throw new ArgumentOutOfRangeException(nameof(startIndex), SR.ArgumentOutOfRange_Index);
-            }
 
             if ((uint)count > (uint)(Length - startIndex))
-            {
                 throw new ArgumentOutOfRangeException(nameof(count), SR.ArgumentOutOfRange_Count);
-            }
 
             if (anyOf.Length == 2)
             {
@@ -185,36 +170,114 @@ namespace System
             }
         }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private extern int IndexOfCharArray(char[] anyOf, int startIndex, int count);
+        private unsafe int IndexOfCharArray(char[] anyOf, int startIndex, int count)
+        {
+            // use probabilistic map, see InitializeProbabilisticMap
+            ProbabilisticMap map = default(ProbabilisticMap);
+            uint* charMap = (uint*)&map;
 
+            InitializeProbabilisticMap(charMap, anyOf);
 
-        // Determines the position within this string of the first occurrence of the specified
-        // string, according to the specified search criteria.  The search begins at
-        // the first character of this string, it is case-sensitive and the current culture
-        // comparison is used.
-        //
-        [Pure]
+            fixed (char* pChars = &_firstChar)
+            {
+                char* pCh = pChars + startIndex;
+
+                while (count > 0)
+                {
+                    int thisChar = *pCh;
+
+                    if (IsCharBitSet(charMap, (byte)thisChar) &&
+                        IsCharBitSet(charMap, (byte)(thisChar >> 8)) &&
+                        ArrayContains((char)thisChar, anyOf))
+                    {
+                        return (int)(pCh - pChars);
+                    }
+
+                    count--;
+                    pCh++;
+                }
+
+                return -1;
+            }
+        }
+
+        private const int PROBABILISTICMAP_BLOCK_INDEX_MASK = 0x7;
+        private const int PROBABILISTICMAP_BLOCK_INDEX_SHIFT = 0x3;
+        private const int PROBABILISTICMAP_SIZE = 0x8;
+
+        // A probabilistic map is an optimization that is used in IndexOfAny/
+        // LastIndexOfAny methods. The idea is to create a bit map of the characters we
+        // are searching for and use this map as a "cheap" check to decide if the
+        // current character in the string exists in the array of input characters.
+        // There are 256 bits in the map, with each character mapped to 2 bits. Every
+        // character is divided into 2 bytes, and then every byte is mapped to 1 bit.
+        // The character map is an array of 8 integers acting as map blocks. The 3 lsb
+        // in each byte in the character is used to index into this map to get the
+        // right block, the value of the remaining 5 msb are used as the bit position
+        // inside this block. 
+        private static unsafe void InitializeProbabilisticMap(uint* charMap, char[] anyOf)
+        {
+            bool hasAscii = false;
+            uint* charMapLocal = charMap; // https://github.com/dotnet/coreclr/issues/14264
+
+            for (int i = 0; i < anyOf.Length; ++i)
+            {
+                int c = anyOf[i];
+
+                // Map low bit
+                SetCharBit(charMapLocal, (byte)c);
+
+                // Map high bit
+                c >>= 8;
+
+                if (c == 0)
+                {
+                    hasAscii = true;
+                }
+                else
+                {
+                    SetCharBit(charMapLocal, (byte)c);
+                }
+            }
+
+            if (hasAscii)
+            {
+                // Common to search for ASCII symbols. Just set the high value once.
+                charMapLocal[0] |= 1u;
+            }
+        }
+
+        private static bool ArrayContains(char searchChar, char[] anyOf)
+        {
+            for (int i = 0; i < anyOf.Length; i++)
+            {
+                if (anyOf[i] == searchChar)
+                    return true;
+            }
+
+            return false;
+        }
+
+        private unsafe static bool IsCharBitSet(uint* charMap, byte value)
+        {
+            return (charMap[value & PROBABILISTICMAP_BLOCK_INDEX_MASK] & (1u << (value >> PROBABILISTICMAP_BLOCK_INDEX_SHIFT))) != 0;
+        }
+
+        private unsafe static void SetCharBit(uint* charMap, byte value)
+        {
+            charMap[value & PROBABILISTICMAP_BLOCK_INDEX_MASK] |= 1u << (value >> PROBABILISTICMAP_BLOCK_INDEX_SHIFT);
+        }
+
         public int IndexOf(String value)
         {
             return IndexOf(value, StringComparison.CurrentCulture);
         }
 
-        // Determines the position within this string of the first occurrence of the specified
-        // string, according to the specified search criteria.  The search begins at
-        // startIndex, it is case-sensitive and the current culture comparison is used.
-        //
-        [Pure]
         public int IndexOf(String value, int startIndex)
         {
             return IndexOf(value, startIndex, StringComparison.CurrentCulture);
         }
 
-        // Determines the position within this string of the first occurrence of the specified
-        // string, according to the specified search criteria.  The search begins at
-        // startIndex, ends at endIndex and the current culture comparison is used.
-        //
-        [Pure]
         public int IndexOf(String value, int startIndex, int count)
         {
             if (startIndex < 0 || startIndex > this.Length)
@@ -226,24 +289,20 @@ namespace System
             {
                 throw new ArgumentOutOfRangeException(nameof(count), SR.ArgumentOutOfRange_Count);
             }
-            Contract.EndContractBlock();
 
             return IndexOf(value, startIndex, count, StringComparison.CurrentCulture);
         }
 
-        [Pure]
         public int IndexOf(String value, StringComparison comparisonType)
         {
             return IndexOf(value, 0, this.Length, comparisonType);
         }
 
-        [Pure]
         public int IndexOf(String value, int startIndex, StringComparison comparisonType)
         {
             return IndexOf(value, startIndex, this.Length - startIndex, comparisonType);
         }
 
-        [Pure]
         public int IndexOf(String value, int startIndex, int count, StringComparison comparisonType)
         {
             // Validate inputs
@@ -255,7 +314,6 @@ namespace System
 
             if (count < 0 || startIndex > this.Length - count)
                 throw new ArgumentOutOfRangeException(nameof(count), SR.ArgumentOutOfRange_Count);
-            Contract.EndContractBlock();
 
             switch (comparisonType)
             {
@@ -275,10 +333,7 @@ namespace System
                     return CultureInfo.InvariantCulture.CompareInfo.IndexOf(this, value, startIndex, count, CompareOptions.Ordinal);
 
                 case StringComparison.OrdinalIgnoreCase:
-                    if (value.IsAscii() && this.IsAscii())
-                        return CultureInfo.InvariantCulture.CompareInfo.IndexOf(this, value, startIndex, count, CompareOptions.IgnoreCase);
-                    else
-                        return TextInfo.IndexOfStringOrdinalIgnoreCase(this, value, startIndex, count);
+                    return TextInfo.IndexOfStringOrdinalIgnoreCase(this, value, startIndex, count);
 
                 default:
                     throw new ArgumentException(SR.NotSupported_StringComparison, nameof(comparisonType));
@@ -290,19 +345,16 @@ namespace System
         // The character at position startIndex is included in the search.  startIndex is the larger
         // index within the string.
         //
-        [Pure]
         public int LastIndexOf(char value)
         {
             return LastIndexOf(value, this.Length - 1, this.Length);
         }
 
-        [Pure]
         public int LastIndexOf(char value, int startIndex)
         {
             return LastIndexOf(value, startIndex, startIndex + 1);
         }
 
-        [Pure]
         public unsafe int LastIndexOf(char value, int startIndex, int count)
         {
             if (Length == 0)
@@ -354,72 +406,118 @@ namespace System
         // The character at position startIndex is included in the search.  startIndex is the larger
         // index within the string.
         //
-
-        //ForceInline ... Jit can't recognize String.get_Length to determine that this is "fluff"
-        [Pure]
         public int LastIndexOfAny(char[] anyOf)
         {
             return LastIndexOfAny(anyOf, this.Length - 1, this.Length);
         }
 
-        [Pure]
         public int LastIndexOfAny(char[] anyOf, int startIndex)
         {
             return LastIndexOfAny(anyOf, startIndex, startIndex + 1);
         }
 
-        [Pure]
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        public extern int LastIndexOfAny(char[] anyOf, int startIndex, int count);
+        public unsafe int LastIndexOfAny(char[] anyOf, int startIndex, int count)
+        {
+            if (anyOf == null)
+                throw new ArgumentNullException(nameof(anyOf));
 
+            if (Length == 0)
+                return -1;
+
+            if ((uint)startIndex >= (uint)Length)
+            {
+                throw new ArgumentOutOfRangeException(nameof(startIndex), SR.ArgumentOutOfRange_Index);
+            }
+
+            if ((count < 0) || ((count - 1) > startIndex))
+            {
+                throw new ArgumentOutOfRangeException(nameof(count), SR.ArgumentOutOfRange_Count);
+            }
+
+            if (anyOf.Length > 1)
+            {
+                return LastIndexOfCharArray(anyOf, startIndex, count);
+            }
+            else if (anyOf.Length == 1)
+            {
+                return LastIndexOf(anyOf[0], startIndex, count);
+            }
+            else // anyOf.Length == 0
+            {
+                return -1;
+            }
+        }
+
+        private unsafe int LastIndexOfCharArray(char[] anyOf, int startIndex, int count)
+        {
+            // use probabilistic map, see InitializeProbabilisticMap
+            ProbabilisticMap map = default(ProbabilisticMap);
+            uint* charMap = (uint*)&map;
+
+            InitializeProbabilisticMap(charMap, anyOf);
+
+            fixed (char* pChars = &_firstChar)
+            {
+                char* pCh = pChars + startIndex;
+
+                while (count > 0)
+                {
+                    int thisChar = *pCh;
+
+                    if (IsCharBitSet(charMap, (byte)thisChar) &&
+                        IsCharBitSet(charMap, (byte)(thisChar >> 8)) &&
+                        ArrayContains((char)thisChar, anyOf))
+                    {
+                        return (int)(pCh - pChars);
+                    }
+
+                    count--;
+                    pCh--;
+                }
+
+                return -1;
+            }
+        }
 
         // Returns the index of the last occurrence of any character in value in the current instance.
         // The search starts at startIndex and runs backwards to startIndex - count + 1.
         // The character at position startIndex is included in the search.  startIndex is the larger
         // index within the string.
         //
-        [Pure]
         public int LastIndexOf(String value)
         {
             return LastIndexOf(value, this.Length - 1, this.Length, StringComparison.CurrentCulture);
         }
 
-        [Pure]
         public int LastIndexOf(String value, int startIndex)
         {
             return LastIndexOf(value, startIndex, startIndex + 1, StringComparison.CurrentCulture);
         }
 
-        [Pure]
         public int LastIndexOf(String value, int startIndex, int count)
         {
             if (count < 0)
             {
                 throw new ArgumentOutOfRangeException(nameof(count), SR.ArgumentOutOfRange_Count);
             }
-            Contract.EndContractBlock();
 
             return LastIndexOf(value, startIndex, count, StringComparison.CurrentCulture);
         }
 
-        [Pure]
         public int LastIndexOf(String value, StringComparison comparisonType)
         {
             return LastIndexOf(value, this.Length - 1, this.Length, comparisonType);
         }
 
-        [Pure]
         public int LastIndexOf(String value, int startIndex, StringComparison comparisonType)
         {
             return LastIndexOf(value, startIndex, startIndex + 1, comparisonType);
         }
 
-        [Pure]
         public int LastIndexOf(String value, int startIndex, int count, StringComparison comparisonType)
         {
             if (value == null)
                 throw new ArgumentNullException(nameof(value));
-            Contract.EndContractBlock();
 
             // Special case for 0 length input strings
             if (this.Length == 0 && (startIndex == -1 || startIndex == 0))
@@ -435,16 +533,15 @@ namespace System
                 startIndex--;
                 if (count > 0)
                     count--;
-
-                // If we are looking for nothing, just return 0
-                if (value.Length == 0 && count >= 0 && startIndex - count + 1 >= 0)
-                    return startIndex;
             }
 
             // 2nd half of this also catches when startIndex == MAXINT, so MAXINT - 0 + 1 == -1, which is < 0.
             if (count < 0 || startIndex - count + 1 < 0)
                 throw new ArgumentOutOfRangeException(nameof(count), SR.ArgumentOutOfRange_Count);
 
+            // If we are looking for nothing, just return startIndex
+            if (value.Length == 0)
+                return startIndex;
 
             switch (comparisonType)
             {
@@ -459,17 +556,19 @@ namespace System
 
                 case StringComparison.InvariantCultureIgnoreCase:
                     return CultureInfo.InvariantCulture.CompareInfo.LastIndexOf(this, value, startIndex, count, CompareOptions.IgnoreCase);
+
                 case StringComparison.Ordinal:
                     return CultureInfo.InvariantCulture.CompareInfo.LastIndexOf(this, value, startIndex, count, CompareOptions.Ordinal);
 
                 case StringComparison.OrdinalIgnoreCase:
-                    if (value.IsAscii() && this.IsAscii())
-                        return CultureInfo.InvariantCulture.CompareInfo.LastIndexOf(this, value, startIndex, count, CompareOptions.IgnoreCase);
-                    else
-                        return TextInfo.LastIndexOfStringOrdinalIgnoreCase(this, value, startIndex, count);
+                    return TextInfo.LastIndexOfStringOrdinalIgnoreCase(this, value, startIndex, count);
+
                 default:
                     throw new ArgumentException(SR.NotSupported_StringComparison, nameof(comparisonType));
             }
         }
+
+        [StructLayout(LayoutKind.Explicit, Size = PROBABILISTICMAP_SIZE * sizeof(uint))]
+        private struct ProbabilisticMap { }
     }
 }

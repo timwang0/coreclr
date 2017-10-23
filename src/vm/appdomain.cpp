@@ -2406,10 +2406,6 @@ void SystemDomain::Init()
     _ASSERTE(curCtx->GetDomain() != NULL);
 #endif
 
-#ifdef _DEBUG
-    g_fVerifierOff = g_pConfig->IsVerifierOff();
-#endif
-
 #ifdef FEATURE_PREJIT
     if (CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_ZapDisable) != 0)
         g_fAllowNativeImages = false;
@@ -11914,20 +11910,4 @@ void ZapperSetBindingPaths(ICorCompilationDomain *pDomain, SString &trustedPlatf
 #endif
 }
 
-#endif
-
-#if !defined(CROSSGEN_COMPILE)
-bool IsSingleAppDomain()
-{
-    STARTUP_FLAGS flags = CorHost2::GetStartupFlags();
-    if(flags & STARTUP_SINGLE_APPDOMAIN)
-        return TRUE;
-    else
-        return FALSE;
-}
-#else
-bool IsSingleAppDomain()
-{
-    return FALSE;
-}
 #endif

@@ -1603,8 +1603,6 @@ void Compiler::fgComputeLifeCall(VARSET_TP& life, GenTreeCall* call)
         }
     }
 
-    /* GC refs cannot be enregistered accross an unmanaged call */
-
     // TODO: we should generate the code for saving to/restoring
     //       from the inlined N/Direct frame instead.
 
@@ -2184,6 +2182,7 @@ void Compiler::fgComputeLifeLIR(VARSET_TP& life, BasicBlock* block, VARSET_VALAR
 #if defined(FEATURE_SIMD)
             case GT_SIMD_CHK:
 #endif // FEATURE_SIMD
+            case GT_JCMP:
             case GT_CMP:
             case GT_JCC:
             case GT_JTRUE:
@@ -2695,6 +2694,9 @@ bool Compiler::fgRemoveDeadStore(GenTree**        pTree,
         noway_assert(rhsNode);
         noway_assert(tree->gtFlags & GTF_VAR_DEF);
 
+#ifndef LEGACY_BACKEND
+        assert(asgNode->OperIs(GT_ASG));
+#else
         if (asgNode->gtOper != GT_ASG && asgNode->gtOverflowEx())
         {
             // asgNode may be <op_ovf>= (with GTF_OVERFLOW). In that case, we need to keep the <op_ovf>
@@ -2762,7 +2764,7 @@ bool Compiler::fgRemoveDeadStore(GenTree**        pTree,
             }
             return false;
         }
-
+#endif
         // Do not remove if this local variable represents
         // a promoted struct field of an address exposed local.
         if (varDsc->lvIsStructField && lvaTable[varDsc->lvParentLcl].lvAddrExposed)

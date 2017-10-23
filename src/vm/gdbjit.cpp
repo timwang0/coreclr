@@ -661,20 +661,62 @@ void __attribute__((noinline)) __jit_debug_register_code() { __asm__(""); };
 /* Make sure to specify the version statically, because the
    debugger may check the version before we can set it.  */
 struct jit_descriptor __jit_debug_descriptor = { 1, 0, 0, 0 };
+static CrstStatic g_jitDescriptorCrst;
 
 // END of GDB JIT interface
 
-/* Static data for .debug_str section */
-const char* DebugStrings[] = {
-  "CoreCLR", "" /* module name */, "" /* module path */
-};
+class DebugStringsCU
+{
+public:
+    DebugStringsCU(const char *module, const char *path)
+        : m_producerName("CoreCLR"),
+          m_moduleName(module),
+          m_moduleDir(path),
+          m_producerOffset(0),
+          m_moduleNameOffset(0),
+          m_moduleDirOffset(0)
+    {
+    }
 
-const int DebugStringCount = sizeof(DebugStrings) / sizeof(DebugStrings[0]);
+    int GetProducerOffset() const   { return m_producerOffset; }
+    int GetModuleNameOffset() const { return m_moduleNameOffset; }
+    int GetModuleDirOffset() const  { return m_moduleDirOffset; }
+
+    void DumpStrings(char *ptr, int &offset)
+    {
+        m_producerOffset = offset;
+        DumpString(m_producerName, ptr, offset);
+
+        m_moduleNameOffset = offset;
+        DumpString(m_moduleName, ptr, offset);
+
+        m_moduleDirOffset = offset;
+        DumpString(m_moduleDir, ptr, offset);
+    }
+
+private:
+    const char* m_producerName;
+    const char* m_moduleName;
+    const char* m_moduleDir;
+
+    int m_producerOffset;
+    int m_moduleNameOffset;
+    int m_moduleDirOffset;
+
+    static void DumpString(const char *str, char *ptr, int &offset)
+    {
+        if (ptr != nullptr)
+        {
+            strcpy(ptr + offset, str);
+        }
+        offset += strlen(str) + 1;
+    }
+};
 
 /* Static data for .debug_abbrev */
 const unsigned char AbbrevTable[] = {
     1, DW_TAG_compile_unit, DW_CHILDREN_yes,
-        DW_AT_producer, DW_FORM_strp, DW_AT_language, DW_FORM_data2, DW_AT_name, DW_FORM_strp,
+        DW_AT_producer, DW_FORM_strp, DW_AT_language, DW_FORM_data2, DW_AT_name, DW_FORM_strp, DW_AT_comp_dir, DW_FORM_strp,
         DW_AT_stmt_list, DW_FORM_sec_offset, 0, 0,
 
     2, DW_TAG_base_type, DW_CHILDREN_no,
@@ -772,6 +814,7 @@ struct __attribute__((packed)) DebugInfoCU
     uint32_t m_prod_off;
     uint16_t m_lang;
     uint32_t m_cu_name;
+    uint32_t m_cu_dir;
     uint32_t m_line_num;
 } debugInfoCU = {
 #ifdef FEATURE_GDBJIT_LANGID_CS
@@ -1784,48 +1827,23 @@ static int getNextPrologueIndex(int from, T &arr, int n)
     return -1;
 }
 
+static NewArrayHolder<WCHAR> g_wszModuleNames;
+static DWORD g_cBytesNeeded;
+
 static inline bool isListedModule(const WCHAR *wszModuleFile)
 {
-    static NewArrayHolder<WCHAR> wszModuleNames = nullptr;
-    static DWORD cBytesNeeded = 0;
-
-    // Get names of interesting modules from environment
-    if (wszModuleNames == nullptr && cBytesNeeded == 0)
-    {
-        DWORD cCharsNeeded = GetEnvironmentVariableW(W("CORECLR_GDBJIT"), NULL, 0);
-
-        if (cCharsNeeded == 0)
-        {
-            cBytesNeeded = 0xffffffff;
-            return false;
-        }
-
-        WCHAR *wszModuleNamesBuf = new WCHAR[cCharsNeeded+1];
-
-        cCharsNeeded = GetEnvironmentVariableW(W("CORECLR_GDBJIT"), wszModuleNamesBuf, cCharsNeeded);
-
-        if (cCharsNeeded == 0)
-        {
-            delete[] wszModuleNamesBuf;
-            cBytesNeeded = 0xffffffff;
-            return false;
-        }
-
-        wszModuleNames = wszModuleNamesBuf;
-        cBytesNeeded = cCharsNeeded + 1;
-    }
-    else if (wszModuleNames == nullptr)
+    if (g_wszModuleNames == nullptr)
     {
         return false;
     }
 
-    _ASSERTE(wszModuleNames != nullptr && cBytesNeeded > 0);
+    _ASSERTE(g_cBytesNeeded > 0);
 
     BOOL isUserDebug = FALSE;
 
-    NewArrayHolder<WCHAR> wszModuleName = new WCHAR[cBytesNeeded];
-    LPWSTR pComma = wcsstr(wszModuleNames, W(","));
-    LPWSTR tmp = wszModuleNames;
+    NewArrayHolder<WCHAR> wszModuleName = new WCHAR[g_cBytesNeeded];
+    LPWSTR pComma = wcsstr(g_wszModuleNames, W(","));
+    LPWSTR tmp = g_wszModuleNames;
 
     while (pComma != NULL)
     {
@@ -1853,7 +1871,8 @@ static inline bool isListedModule(const WCHAR *wszModuleFile)
     return isUserDebug;
 }
 
-static NotifyGdb::AddrSet codeAddrs;
+static NotifyGdb::AddrSet g_codeAddrs;
+static CrstStatic g_codeAddrsCrst;
 
 class Elf_SectionTracker
 {
@@ -2439,6 +2458,38 @@ static void BuildDebugFrame(Elf_Builder &elfBuilder, PCODE pCode, TADDR codeSize
 }
 #endif // FEATURE_GDBJIT_FRAME
 
+void NotifyGdb::Initialize()
+{
+    g_jitDescriptorCrst.Init(CrstNotifyGdb);
+    g_codeAddrsCrst.Init(CrstNotifyGdb);
+
+    // Get names of interesting modules from environment
+    if (g_wszModuleNames == nullptr && g_cBytesNeeded == 0)
+    {
+        DWORD cCharsNeeded = GetEnvironmentVariableW(W("CORECLR_GDBJIT"), NULL, 0);
+
+        if (cCharsNeeded == 0)
+        {
+            g_cBytesNeeded = 0xffffffff;
+            return;
+        }
+
+        WCHAR *wszModuleNamesBuf = new WCHAR[cCharsNeeded+1];
+
+        cCharsNeeded = GetEnvironmentVariableW(W("CORECLR_GDBJIT"), wszModuleNamesBuf, cCharsNeeded);
+
+        if (cCharsNeeded == 0)
+        {
+            delete[] wszModuleNamesBuf;
+            g_cBytesNeeded = 0xffffffff;
+            return;
+        }
+
+        g_wszModuleNames = wszModuleNamesBuf;
+        g_cBytesNeeded = cCharsNeeded + 1;
+    }
+}
+
 /* Create ELF/DWARF debug info for jitted method */
 void NotifyGdb::MethodPrepared(MethodDesc* methodDescPtr)
 {
@@ -2479,9 +2530,7 @@ void NotifyGdb::OnMethodPrepared(MethodDesc* methodDescPtr)
     SString modName = mod->GetFile()->GetPath();
     StackScratchBuffer scratch;
     const char* szModName = modName.GetUTF8(scratch);
-    const char *szModulePath, *szModuleFile;
-    SplitPathname(szModName, szModulePath, szModuleFile);
-
+    const char* szModuleFile = SplitFilename(szModName);
 
     int length = MultiByteToWideChar(CP_UTF8, 0, szModuleFile, -1, NULL, 0);
     if (length == 0)
@@ -2508,7 +2557,7 @@ void NotifyGdb::OnMethodPrepared(MethodDesc* methodDescPtr)
 
     if (isListedModule(wszModuleFile))
     {
-        bool bEmitted = EmitDebugInfo(elfBuilder, methodDescPtr, pCode, codeSize, szModuleFile);
+        bool bEmitted = EmitDebugInfo(elfBuilder, methodDescPtr, pCode, codeSize);
         bNotify = bNotify || bEmitted;
     }
 #ifdef FEATURE_GDBJIT_SYMTAB
@@ -2548,21 +2597,25 @@ void NotifyGdb::OnMethodPrepared(MethodDesc* methodDescPtr)
     jit_symbols->symfile_addr = symfile_addr;
     jit_symbols->symfile_size = symfile_size;
 
-    /* Link into list */
-    jit_code_entry *head = __jit_debug_descriptor.first_entry;
-    __jit_debug_descriptor.first_entry = jit_symbols;
-    if (head != 0)
     {
-        jit_symbols->next_entry = head;
-        head->prev_entry = jit_symbols;
+        CrstHolder crst(&g_jitDescriptorCrst);
+
+        /* Link into list */
+        jit_code_entry *head = __jit_debug_descriptor.first_entry;
+        __jit_debug_descriptor.first_entry = jit_symbols;
+        if (head != 0)
+        {
+            jit_symbols->next_entry = head;
+            head->prev_entry = jit_symbols;
+        }
+
+        jit_symbols.SuppressRelease();
+
+        /* Notify the debugger */
+        __jit_debug_descriptor.relevant_entry = jit_symbols;
+        __jit_debug_descriptor.action_flag = JIT_REGISTER_FN;
+        __jit_debug_register_code();
     }
-
-    jit_symbols.SuppressRelease();
-
-    /* Notify the debugger */
-    __jit_debug_descriptor.relevant_entry = jit_symbols;
-    __jit_debug_descriptor.action_flag = JIT_REGISTER_FN;
-    __jit_debug_register_code();
 }
 
 #ifdef FEATURE_GDBJIT_FRAME
@@ -2661,7 +2714,7 @@ bool NotifyGdb::EmitSymtab(Elf_Builder &elfBuilder, MethodDesc* methodDescPtr, P
 }
 #endif // FEATURE_GDBJIT_SYMTAB
 
-bool NotifyGdb::EmitDebugInfo(Elf_Builder &elfBuilder, MethodDesc* methodDescPtr, PCODE pCode, TADDR codeSize, const char *szModuleFile)
+bool NotifyGdb::EmitDebugInfo(Elf_Builder &elfBuilder, MethodDesc* methodDescPtr, PCODE pCode, TADDR codeSize)
 {
     unsigned int thunkIndexBase = elfBuilder.GetSectionCount();
 
@@ -2750,22 +2803,35 @@ bool NotifyGdb::EmitDebugInfo(Elf_Builder &elfBuilder, MethodDesc* methodDescPtr
         return false;
     }
 
+    const char *cuPath = "";
+
     /* Build .debug_line section */
-    if (!BuildLineTable(dbgLine, pCode, codeSize, symInfo, symInfoLen))
+    if (!BuildLineTable(dbgLine, pCode, codeSize, symInfo, symInfoLen, cuPath))
     {
         return false;
     }
 
-    DebugStrings[1] = szModuleFile;
+    // Split full path to compile unit into file name and directory path
+    const char *fileName = SplitFilename(cuPath);
+    int dirLen = fileName - cuPath;
+    NewArrayHolder<char> dirPath;
+    if (dirLen != 0)
+    {
+        dirPath = new char[dirLen];
+        memcpy(dirPath, cuPath, dirLen - 1);
+        dirPath[dirLen - 1] = '\0';
+    }
+
+    DebugStringsCU debugStringsCU(fileName, dirPath ? (const char *)dirPath : "");
 
     /* Build .debug_str section */
-    if (!BuildDebugStrings(dbgStr, pTypeMap, method))
+    if (!BuildDebugStrings(dbgStr, pTypeMap, method, debugStringsCU))
     {
         return false;
     }
 
     /* Build .debug_info section */
-    if (!BuildDebugInfo(dbgInfo, pTypeMap, method))
+    if (!BuildDebugInfo(dbgInfo, pTypeMap, method, debugStringsCU))
     {
         return false;
     }
@@ -2862,6 +2928,8 @@ void NotifyGdb::MethodPitched(MethodDesc* methodDescPtr)
     if (pCode == NULL)
         return;
 
+    CrstHolder crst(&g_jitDescriptorCrst);
+
     /* Find relevant entry */
     for (jit_code_entry* jit_symbols = __jit_debug_descriptor.first_entry; jit_symbols != 0; jit_symbols = jit_symbols->next_entry)
     {
@@ -2893,12 +2961,13 @@ void NotifyGdb::MethodPitched(MethodDesc* methodDescPtr)
 }
 
 /* Build the DWARF .debug_line section */
-bool NotifyGdb::BuildLineTable(MemBuf& buf, PCODE startAddr, TADDR codeSize, SymbolsInfo* lines, unsigned nlines)
+bool NotifyGdb::BuildLineTable(MemBuf& buf, PCODE startAddr, TADDR codeSize, SymbolsInfo* lines, unsigned nlines,
+                               const char * &cuPath)
 {
     MemBuf fileTable, lineProg;
 
     /* Build file table */
-    if (!BuildFileTable(fileTable, lines, nlines))
+    if (!BuildFileTable(fileTable, lines, nlines, cuPath))
         return false;
     /* Build line info program */
     if (!BuildLineProg(lineProg, startAddr, codeSize, lines, nlines))
@@ -2906,85 +2975,193 @@ bool NotifyGdb::BuildLineTable(MemBuf& buf, PCODE startAddr, TADDR codeSize, Sym
         return false;
     }
 
-    buf.MemSize = sizeof(DwarfLineNumHeader) + 1 + fileTable.MemSize + lineProg.MemSize;
+    buf.MemSize = sizeof(DwarfLineNumHeader) + fileTable.MemSize + lineProg.MemSize;
     buf.MemPtr = new char[buf.MemSize];
 
     /* Fill the line info header */
     DwarfLineNumHeader* header = reinterpret_cast<DwarfLineNumHeader*>(buf.MemPtr.GetValue());
     memcpy(buf.MemPtr, &LineNumHeader, sizeof(DwarfLineNumHeader));
-    header->m_length = buf.MemSize - sizeof(uint32_t);
-    header->m_hdr_length = sizeof(DwarfLineNumHeader) + 1 + fileTable.MemSize - 2 * sizeof(uint32_t) - sizeof(uint16_t);
-    buf.MemPtr[sizeof(DwarfLineNumHeader)] = 0; // this is for missing directory table
+    header->m_length = buf.MemSize - sizeof(header->m_length);
+
+    // Set m_hdr_field to the number of bytes following the m_hdr_field field to the beginning of the first byte of
+    // the line number program itself.
+    header->m_hdr_length = sizeof(DwarfLineNumHeader)
+                           - sizeof(header->m_length)
+                           - sizeof(header->m_version)
+                           - sizeof(header->m_hdr_length)
+                           + fileTable.MemSize;
+
     /* copy file table */
-    memcpy(buf.MemPtr + sizeof(DwarfLineNumHeader) + 1, fileTable.MemPtr, fileTable.MemSize);
+    memcpy(buf.MemPtr + sizeof(DwarfLineNumHeader), fileTable.MemPtr, fileTable.MemSize);
     /* copy line program */
-    memcpy(buf.MemPtr + sizeof(DwarfLineNumHeader) + 1 + fileTable.MemSize, lineProg.MemPtr, lineProg.MemSize);
+    memcpy(buf.MemPtr + sizeof(DwarfLineNumHeader) + fileTable.MemSize, lineProg.MemPtr, lineProg.MemSize);
 
     return true;
 }
 
-/* Buid the source files table for DWARF source line info */
-bool NotifyGdb::BuildFileTable(MemBuf& buf, SymbolsInfo* lines, unsigned nlines)
+// A class for building Directory Table and File Table (in .debug_line section) from a list of files
+class NotifyGdb::FileTableBuilder
 {
-    NewArrayHolder<const char*> files = nullptr;
-    unsigned nfiles = 0;
+    int m_capacity;
 
-    /* GetValue file names and replace them with indices in file table */
-    files = new const char*[nlines];
-    if (files == nullptr)
-        return false;
+    NewArrayHolder< NewArrayHolder<char> > m_dirs;
+    int m_dirs_count;
+
+    struct FileEntry
+    {
+        const char* path;
+        const char* name;
+        int dir;
+    };
+    NewArrayHolder<FileEntry> m_files;
+    int m_files_count;
+
+    int FindDir(const char *name) const
+    {
+        for (int i = 0; i < m_dirs_count; ++i)
+        {
+            if (strcmp(m_dirs[i], name) == 0)
+                return i;
+        }
+        return -1;
+    }
+
+    int FindFile(const char *path) const
+    {
+        for (int i = 0; i < m_files_count; ++i)
+        {
+            if (strcmp(m_files[i].path, path) == 0)
+                return i;
+        }
+        return -1;
+    }
+
+public:
+
+    FileTableBuilder(int capacity) :
+        m_capacity(capacity),
+        m_dirs(new NewArrayHolder<char>[capacity]),
+        m_dirs_count(0),
+        m_files(new FileEntry[capacity]),
+        m_files_count(0)
+    {
+    }
+
+    int Add(const char *path)
+    {
+        // Already exists?
+        int i = FindFile(path);
+        if (i != -1)
+            return i;
+
+        if (m_files_count >= m_capacity)
+            return -1;
+
+        // Add new file entry
+        m_files[m_files_count].path = path;
+        const char *filename = SplitFilename(path);
+        m_files[m_files_count].name = filename;
+        int dirLen = filename - path;
+        if (dirLen == 0)
+        {
+            m_files[m_files_count].dir = 0;
+            return m_files_count++;
+        }
+
+        // Construct directory path
+        NewArrayHolder<char> dirName = new char[dirLen + 1];
+        int delimiterDelta = dirLen == 1 ? 0 : 1; // Avoid empty dir entry when file is at Unix root /
+        memcpy(dirName, path, dirLen - delimiterDelta);
+        dirName[dirLen - delimiterDelta] = '\0';
+
+        // Try to find existing directory entry
+        i = FindDir(dirName);
+        if (i != -1)
+        {
+            m_files[m_files_count].dir = i + 1;
+            return m_files_count++;
+        }
+
+        // Create new directory entry
+        if (m_dirs_count >= m_capacity)
+            return -1;
+
+        m_dirs[m_dirs_count++] = dirName.Extract();
+
+        m_files[m_files_count].dir = m_dirs_count;
+        return m_files_count++;
+    }
+
+    void Build(MemBuf& buf)
+    {
+        unsigned totalSize = 0;
+
+        // Compute buffer size
+        for (unsigned i = 0; i < m_dirs_count; ++i)
+            totalSize += strlen(m_dirs[i]) + 1;
+        totalSize += 1;
+
+        char cnv_buf[16];
+        for (unsigned i = 0; i < m_files_count; ++i)
+        {
+            int len = Leb128Encode(static_cast<uint32_t>(m_files[i].dir), cnv_buf, sizeof(cnv_buf));
+            totalSize += strlen(m_files[i].name) + 1 + len + 2;
+        }
+        totalSize += 1;
+
+        // Fill the buffer
+        buf.MemSize = totalSize;
+        buf.MemPtr = new char[buf.MemSize];
+
+        char *ptr = buf.MemPtr;
+
+        for (unsigned i = 0; i < m_dirs_count; ++i)
+        {
+            strcpy(ptr, m_dirs[i]);
+            ptr += strlen(m_dirs[i]) + 1;
+        }
+        // final zero byte for directory table
+        *ptr++ = 0;
+
+        for (unsigned i = 0; i < m_files_count; ++i)
+        {
+            strcpy(ptr, m_files[i].name);
+            ptr += strlen(m_files[i].name) + 1;
+
+            // Index in directory table
+            int len = Leb128Encode(static_cast<uint32_t>(m_files[i].dir), cnv_buf, sizeof(cnv_buf));
+            memcpy(ptr, cnv_buf, len);
+            ptr += len;
+
+            // Two LEB128 entries which we don't care
+            *ptr++ = 0;
+            *ptr++ = 0;
+        }
+        // final zero byte
+        *ptr = 0;
+    }
+};
+
+/* Buid the source files table for DWARF source line info */
+bool NotifyGdb::BuildFileTable(MemBuf& buf, SymbolsInfo* lines, unsigned nlines, const char * &cuPath)
+{
+    FileTableBuilder fileTable(nlines);
+
+    cuPath = "";
     for (unsigned i = 0; i < nlines; ++i)
     {
-        if (lines[i].fileName[0] == 0)
+        const char* fileName = lines[i].fileName;
+
+        if (fileName[0] == '\0')
             continue;
-        const char *filePath, *fileName;
-        SplitPathname(lines[i].fileName, filePath, fileName);
 
-        /* if this isn't first then we already added file, so adjust index */
-        lines[i].fileIndex = (nfiles) ? (nfiles - 1) : (nfiles);
+        if (*cuPath == '\0') // Use first non-empty filename as compile unit
+            cuPath = fileName;
 
-        bool found = false;
-        for (int j = 0; j < nfiles; ++j)
-        {
-            if (strcmp(fileName, files[j]) == 0)
-            {
-                found = true;
-                break;
-            }
-        }
-
-        /* add new source file */
-        if (!found)
-        {
-            files[nfiles++] = fileName;
-        }
+        lines[i].fileIndex = fileTable.Add(fileName);
     }
 
-    /* build file table */
-    unsigned totalSize = 0;
-
-    for (unsigned i = 0; i < nfiles; ++i)
-    {
-        totalSize += strlen(files[i]) + 1 + 3;
-    }
-    totalSize += 1;
-
-    buf.MemSize = totalSize;
-    buf.MemPtr = new char[buf.MemSize];
-
-    /* copy collected file names */
-    char *ptr = buf.MemPtr;
-    for (unsigned i = 0; i < nfiles; ++i)
-    {
-        strcpy(ptr, files[i]);
-        ptr += strlen(files[i]) + 1;
-        // three LEB128 entries which we don't care
-        *ptr++ = 0;
-        *ptr++ = 0;
-        *ptr++ = 0;
-    }
-    // final zero byte
-    *ptr = 0;
+    fileTable.Build(buf);
 
     return true;
 }
@@ -3073,7 +3250,7 @@ static void fixLineMapping(SymbolsInfo* lines, unsigned nlines)
 /* Build program for DWARF source line section */
 bool NotifyGdb::BuildLineProg(MemBuf& buf, PCODE startAddr, TADDR codeSize, SymbolsInfo* lines, unsigned nlines)
 {
-    static char cnv_buf[16];
+    char cnv_buf[16];
 
     /* reserve memory assuming worst case: set address, advance line command, set proglogue/epilogue and copy for each line */
     buf.MemSize =
@@ -3142,15 +3319,15 @@ bool NotifyGdb::BuildLineProg(MemBuf& buf, PCODE startAddr, TADDR codeSize, Symb
 }
 
 /* Build the DWARF .debug_str section */
-bool NotifyGdb::BuildDebugStrings(MemBuf& buf, PTK_TypeInfoMap pTypeMap, FunctionMemberPtrArrayHolder &method)
+bool NotifyGdb::BuildDebugStrings(MemBuf& buf,
+                                  PTK_TypeInfoMap pTypeMap,
+                                  FunctionMemberPtrArrayHolder &method,
+                                  DebugStringsCU &debugStringsCU)
 {
     int totalLength = 0;
 
     /* calculate total section size */
-    for (int i = 0; i < DebugStringCount; ++i)
-    {
-        totalLength += strlen(DebugStrings[i]) + 1;
-    }
+    debugStringsCU.DumpStrings(nullptr, totalLength);
 
     for (int i = 0; i < method.GetCount(); ++i)
     {
@@ -3173,11 +3350,8 @@ bool NotifyGdb::BuildDebugStrings(MemBuf& buf, PTK_TypeInfoMap pTypeMap, Functio
     /* copy strings */
     char* bufPtr = buf.MemPtr;
     int offset = 0;
-    for (int i = 0; i < DebugStringCount; ++i)
-    {
-        strcpy(bufPtr + offset, DebugStrings[i]);
-        offset += strlen(DebugStrings[i]) + 1;
-    }
+
+    debugStringsCU.DumpStrings(bufPtr, offset);
 
     for (int i = 0; i < method.GetCount(); ++i)
     {
@@ -3208,7 +3382,10 @@ bool NotifyGdb::BuildDebugAbbrev(MemBuf& buf)
 }
 
 /* Build tge DWARF .debug_info section */
-bool NotifyGdb::BuildDebugInfo(MemBuf& buf, PTK_TypeInfoMap pTypeMap, FunctionMemberPtrArrayHolder &method)
+bool NotifyGdb::BuildDebugInfo(MemBuf& buf,
+                               PTK_TypeInfoMap pTypeMap,
+                               FunctionMemberPtrArrayHolder &method,
+                               DebugStringsCU &debugStringsCU)
 {
     int totalTypeVarSubSize = 0;
     {
@@ -3242,8 +3419,9 @@ bool NotifyGdb::BuildDebugInfo(MemBuf& buf, PTK_TypeInfoMap pTypeMap, FunctionMe
        reinterpret_cast<DebugInfoCU*>(buf.MemPtr + offset);
     memcpy(buf.MemPtr + offset, &debugInfoCU, sizeof(DebugInfoCU));
     offset += sizeof(DebugInfoCU);
-    diCU->m_prod_off = 0;
-    diCU->m_cu_name = strlen(DebugStrings[0]) + 1;
+    diCU->m_prod_off = debugStringsCU.GetProducerOffset();
+    diCU->m_cu_name  = debugStringsCU.GetModuleNameOffset();
+    diCU->m_cu_dir   = debugStringsCU.GetModuleDirOffset();
     {
         auto iter = pTypeMap->Begin();
         while (iter != pTypeMap->End())
@@ -3297,8 +3475,10 @@ bool NotifyGdb::CollectCalledMethods(CalledMethod* pCalledMethods,
 {
     AddrSet tmpCodeAddrs;
 
-    if (!codeAddrs.Contains(nativeCode))
-        codeAddrs.Add(nativeCode);
+    CrstHolder crst(&g_codeAddrsCrst);
+
+    if (!g_codeAddrs.Contains(nativeCode))
+        g_codeAddrs.Add(nativeCode);
 
     CalledMethod* pList = pCalledMethods;
 
@@ -3306,7 +3486,7 @@ bool NotifyGdb::CollectCalledMethods(CalledMethod* pCalledMethods,
     while (pList != NULL)
     {
         TADDR callAddr = (TADDR)pList->GetCallAddr();
-        if (!tmpCodeAddrs.Contains(callAddr) && !codeAddrs.Contains(callAddr)) {
+        if (!tmpCodeAddrs.Contains(callAddr) && !g_codeAddrs.Contains(callAddr)) {
             tmpCodeAddrs.Add(callAddr);
         }
         pList = pList->GetNext();
@@ -3320,7 +3500,7 @@ bool NotifyGdb::CollectCalledMethods(CalledMethod* pCalledMethods,
     while (i < symbolCount && pList != NULL)
     {
         TADDR callAddr = (TADDR)pList->GetCallAddr();
-        if (!codeAddrs.Contains(callAddr))
+        if (!g_codeAddrs.Contains(callAddr))
         {
             MethodDesc* pMD = pList->GetMethodDesc();
             LPCUTF8 methodName = pMD->GetName();
@@ -3330,7 +3510,7 @@ bool NotifyGdb::CollectCalledMethods(CalledMethod* pCalledMethods,
             sprintf_s((char*)symbolNames[i].m_name, symbolNameLength, "__thunk_%s", methodName);
             symbolNames[i].m_value = callAddr;
             ++i;
-            codeAddrs.Add(callAddr);
+            g_codeAddrs.Add(callAddr);
         }
         pList = pList->GetNext();
     }
@@ -3404,22 +3584,18 @@ bool NotifyGdb::BuildSymbolTableSection(MemBuf& buf, PCODE addr, TADDR codeSize,
     return true;
 }
 
-/* Split full path name into directory & file names */
-void NotifyGdb::SplitPathname(const char* path, const char*& pathName, const char*& fileName)
+/* Split file name part from the full path */
+const char * NotifyGdb::SplitFilename(const char* path)
 {
-    char* pSlash = strrchr(path, '/');
+    // Search for the last directory delimiter (Windows or Unix)
+    const char *pSlash = nullptr;
+    for (const char *p = path; *p != '\0'; p++)
+    {
+        if (*p == '/' || *p == '\\')
+            pSlash = p;
+    }
 
-    if (pSlash != nullptr)
-    {
-        *pSlash = 0;
-        fileName = ++pSlash;
-        pathName = path;
-    }
-    else
-    {
-        fileName = path;
-        pathName = nullptr;
-    }
+    return pSlash ? pSlash + 1 : path;
 }
 
 /* ELF 32bit header */

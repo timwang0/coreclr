@@ -41,16 +41,16 @@ bool IsSSE4Instruction(instruction ins)
 
 bool IsSSEOrAVXInstruction(instruction ins)
 {
-#ifdef FEATURE_AVX_SUPPORT
+#ifndef LEGACY_BACKEND
     return (ins >= INS_FIRST_SSE2_INSTRUCTION && ins <= INS_LAST_AVX_INSTRUCTION);
-#else  // !FEATURE_AVX_SUPPORT
+#else  // !LEGACY_BACKEND
     return IsSSE2Instruction(ins);
-#endif // !FEATURE_AVX_SUPPORT
+#endif // LEGACY_BACKEND
 }
 
 bool IsAVXOnlyInstruction(instruction ins)
 {
-#ifdef FEATURE_AVX_SUPPORT
+#ifndef LEGACY_BACKEND
     return (ins >= INS_FIRST_AVX_INSTRUCTION && ins <= INS_LAST_AVX_INSTRUCTION);
 #else
     return false;
@@ -59,57 +59,55 @@ bool IsAVXOnlyInstruction(instruction ins)
 
 bool emitter::IsAVXInstruction(instruction ins)
 {
-#ifdef FEATURE_AVX_SUPPORT
+#ifndef LEGACY_BACKEND
     return (UseAVX() && IsSSEOrAVXInstruction(ins));
 #else
     return false;
 #endif
 }
 
-#ifdef FEATURE_AVX_SUPPORT
+#ifndef LEGACY_BACKEND
 // Returns true if the AVX instruction is a binary operator that requires 3 operands.
 // When we emit an instruction with only two operands, we will duplicate the destination
 // as a source.
 // TODO-XArch-Cleanup: This is a temporary solution for now. Eventually this needs to
 // be formalized by adding an additional field to instruction table to
 // to indicate whether a 3-operand instruction.
-bool emitter::IsThreeOperandBinaryAVXInstruction(instruction ins)
+bool emitter::IsDstDstSrcAVXInstruction(instruction ins)
 {
     return IsAVXInstruction(ins) &&
-           (ins == INS_cvtsi2ss || ins == INS_cvtsi2sd || ins == INS_cvtss2sd || ins == INS_cvtsd2ss ||
-            ins == INS_addss || ins == INS_addsd || ins == INS_subss || ins == INS_subsd || ins == INS_mulss ||
-            ins == INS_mulsd || ins == INS_divss || ins == INS_divsd || ins == INS_addps || ins == INS_addpd ||
-            ins == INS_subps || ins == INS_subpd || ins == INS_mulps || ins == INS_mulpd || ins == INS_cmpps ||
-            ins == INS_cmppd || ins == INS_andps || ins == INS_andpd || ins == INS_orps || ins == INS_orpd ||
-            ins == INS_xorps || ins == INS_xorpd || ins == INS_dpps || ins == INS_dppd || ins == INS_haddpd ||
-            ins == INS_por || ins == INS_pand || ins == INS_pandn || ins == INS_pcmpeqd || ins == INS_pcmpgtd ||
-            ins == INS_pcmpeqw || ins == INS_pcmpgtw || ins == INS_pcmpeqb || ins == INS_pcmpgtb ||
-            ins == INS_pcmpeqq || ins == INS_pcmpgtq || ins == INS_pmulld || ins == INS_pmullw ||
-
-            ins == INS_shufps || ins == INS_shufpd || ins == INS_minps || ins == INS_minss || ins == INS_minpd ||
-            ins == INS_minsd || ins == INS_divps || ins == INS_divpd || ins == INS_maxps || ins == INS_maxpd ||
-            ins == INS_maxss || ins == INS_maxsd || ins == INS_andnps || ins == INS_andnpd || ins == INS_paddb ||
-            ins == INS_paddw || ins == INS_paddd || ins == INS_paddq || ins == INS_psubb || ins == INS_psubw ||
-            ins == INS_psubd || ins == INS_psubq || ins == INS_pmuludq || ins == INS_pxor || ins == INS_insertps ||
-            ins == INS_vinsertf128 || ins == INS_punpckldq || ins == INS_phaddd || ins == INS_pminub ||
-            ins == INS_pminsw || ins == INS_pminsb || ins == INS_pminsd || ins == INS_pminuw || ins == INS_pminud ||
-            ins == INS_pmaxub || ins == INS_pmaxsw || ins == INS_pmaxsb || ins == INS_pmaxsd || ins == INS_pmaxuw ||
-            ins == INS_pmaxud || ins == INS_vinserti128 || ins == INS_punpckhbw || ins == INS_punpcklbw ||
-            ins == INS_punpckhqdq || ins == INS_punpcklqdq || ins == INS_punpckhwd || ins == INS_punpcklwd ||
-            ins == INS_punpckhdq || ins == INS_packssdw || ins == INS_packsswb || ins == INS_packuswb ||
-            ins == INS_packusdw || ins == INS_vperm2i128);
+           (ins == INS_cvtsi2ss || ins == INS_cvtsi2sd || ins == INS_addss || ins == INS_addsd || ins == INS_subss ||
+            ins == INS_subsd || ins == INS_mulss || ins == INS_mulsd || ins == INS_divss || ins == INS_divsd ||
+            ins == INS_addps || ins == INS_addpd || ins == INS_subps || ins == INS_subpd || ins == INS_mulps ||
+            ins == INS_mulpd || ins == INS_cmpps || ins == INS_cmppd || ins == INS_andps || ins == INS_andpd ||
+            ins == INS_orps || ins == INS_orpd || ins == INS_xorps || ins == INS_xorpd || ins == INS_dpps ||
+            ins == INS_dppd || ins == INS_haddpd || ins == INS_por || ins == INS_pand || ins == INS_pandn ||
+            ins == INS_pcmpeqd || ins == INS_pcmpgtd || ins == INS_pcmpeqw || ins == INS_pcmpgtw ||
+            ins == INS_pcmpeqb || ins == INS_pcmpgtb || ins == INS_pcmpeqq || ins == INS_pcmpgtq || ins == INS_pmulld ||
+            ins == INS_pmullw || ins == INS_shufps || ins == INS_shufpd || ins == INS_minps || ins == INS_minss ||
+            ins == INS_minpd || ins == INS_minsd || ins == INS_divps || ins == INS_divpd || ins == INS_maxps ||
+            ins == INS_maxpd || ins == INS_maxss || ins == INS_maxsd || ins == INS_andnps || ins == INS_andnpd ||
+            ins == INS_paddb || ins == INS_paddw || ins == INS_paddd || ins == INS_paddq || ins == INS_psubb ||
+            ins == INS_psubw || ins == INS_psubd || ins == INS_psubq || ins == INS_pmuludq || ins == INS_pxor ||
+            ins == INS_insertps || ins == INS_vinsertf128 || ins == INS_punpckldq || ins == INS_phaddd ||
+            ins == INS_pminub || ins == INS_pminsw || ins == INS_pminsb || ins == INS_pminsd || ins == INS_pminuw ||
+            ins == INS_pminud || ins == INS_pmaxub || ins == INS_pmaxsw || ins == INS_pmaxsb || ins == INS_pmaxsd ||
+            ins == INS_pmaxuw || ins == INS_pmaxud || ins == INS_vinserti128 || ins == INS_punpckhbw ||
+            ins == INS_punpcklbw || ins == INS_punpckhqdq || ins == INS_punpcklqdq || ins == INS_punpckhwd ||
+            ins == INS_punpcklwd || ins == INS_punpckhdq || ins == INS_packssdw || ins == INS_packsswb ||
+            ins == INS_packuswb || ins == INS_packusdw || ins == INS_vperm2i128);
 }
 
-// Returns true if the AVX instruction is a move operator that requires 3 operands.
-// When we emit an instruction with only two operands, we will duplicate the source
-// register in the vvvv field.  This is because these merge sources into the dest.
+// Returns true if the AVX instruction requires 3 operands that duplicate the source
+// register in the vvvv field.
 // TODO-XArch-Cleanup: This is a temporary solution for now. Eventually this needs to
 // be formalized by adding an additional field to instruction table to
 // to indicate whether a 3-operand instruction.
-bool emitter::IsThreeOperandMoveAVXInstruction(instruction ins)
+bool emitter::IsDstSrcSrcAVXInstruction(instruction ins)
 {
-    return IsAVXInstruction(ins) && (ins == INS_movlpd || ins == INS_movlps || ins == INS_movhpd || ins == INS_movhps ||
-                                     ins == INS_movss || ins == INS_movlhps);
+    return IsAVXInstruction(ins) &&
+           (ins == INS_movlpd || ins == INS_movlps || ins == INS_movhpd || ins == INS_movhps || ins == INS_movss ||
+            ins == INS_movlhps || ins == INS_sqrtss || ins == INS_sqrtsd || ins == INS_cvtss2sd || ins == INS_cvtsd2ss);
 }
 
 // ------------------------------------------------------------------------------
@@ -124,7 +122,7 @@ bool emitter::Is4ByteAVXInstruction(instruction ins)
 {
     return UseAVX() && (IsSSE4Instruction(ins) || IsAVXOnlyInstruction(ins)) && EncodedBySSE38orSSE3A(ins);
 }
-#endif // FEATURE_AVX_SUPPORT
+#endif // !LEGACY_BACKEND
 
 // -------------------------------------------------------------------
 // Is4ByteSSE4Instruction: Returns true if the SSE4 instruction
@@ -145,7 +143,7 @@ bool emitter::Is4ByteSSE4Instruction(instruction ins)
 #endif
 }
 
-#ifdef FEATURE_AVX_SUPPORT
+#ifndef LEGACY_BACKEND
 // Returns true if this instruction requires a VEX prefix
 // All AVX instructions require a VEX prefix
 bool emitter::TakesVexPrefix(instruction ins)
@@ -204,7 +202,7 @@ emitter::code_t emitter::AddVexPrefix(instruction ins, code_t code, emitAttr att
 
     return code;
 }
-#endif // FEATURE_AVX_SUPPORT
+#endif // !LEGACY_BACKEND
 
 // Returns true if this instruction, for the given EA_SIZE(attr), will require a REX.W prefix
 bool TakesRexWPrefix(instruction ins, emitAttr attr)
@@ -444,7 +442,7 @@ bool isPrefix(BYTE b)
 // Outputs VEX prefix (in case of AVX instructions) and REX.R/X/W/B otherwise.
 unsigned emitter::emitOutputRexOrVexPrefixIfNeeded(instruction ins, BYTE* dst, code_t& code)
 {
-#ifdef FEATURE_AVX_SUPPORT
+#ifndef LEGACY_BACKEND
     if (hasVexPrefix(code))
     {
         // Only AVX instructions should have a VEX prefix
@@ -542,7 +540,7 @@ unsigned emitter::emitOutputRexOrVexPrefixIfNeeded(instruction ins, BYTE* dst, c
         emitOutputByte(dst + 2, vexPrefix & 0xFF);
         return 3;
     }
-#endif // FEATURE_AVX_SUPPORT
+#endif // !LEGACY_BACKEND
 
 #ifdef _TARGET_AMD64_
     if (code > 0x00FFFFFFFFLL)
@@ -672,7 +670,7 @@ unsigned emitter::emitGetVexPrefixSize(instruction ins, emitAttr attr)
 //=opcodeSize + vexPrefixAdjustedSize
 unsigned emitter::emitGetVexPrefixAdjustedSize(instruction ins, emitAttr attr, code_t code)
 {
-#ifdef FEATURE_AVX_SUPPORT
+#ifndef LEGACY_BACKEND
     if (IsAVXInstruction(ins))
     {
         unsigned vexPrefixAdjustedSize = emitGetVexPrefixSize(ins, attr);
@@ -708,8 +706,7 @@ unsigned emitter::emitGetVexPrefixAdjustedSize(instruction ins, emitAttr attr, c
 
         return vexPrefixAdjustedSize;
     }
-#endif // FEATURE_AVX_SUPPORT
-
+#endif // !LEGACY_BACKEND
     return 0;
 }
 
@@ -1248,7 +1245,7 @@ inline unsigned emitter::insEncodeReg345(instruction ins, regNumber reg, emitAtt
  */
 inline emitter::code_t emitter::insEncodeReg3456(instruction ins, regNumber reg, emitAttr size, code_t code)
 {
-#ifdef FEATURE_AVX_SUPPORT
+#ifndef LEGACY_BACKEND
     assert(reg < REG_STK);
     assert(IsAVXInstruction(ins));
     assert(hasVexPrefix(code));
@@ -3842,7 +3839,7 @@ void emitter::emitIns_R_R_I(instruction ins, emitAttr attr, regNumber reg1, regN
     dispIns(id);
     emitCurIGsize += sz;
 }
-#ifdef FEATURE_AVX_SUPPORT
+
 /*****************************************************************************
 *
 *  Add an instruction with three register operands.
@@ -3903,7 +3900,6 @@ void emitter::emitIns_R_R_R_I(
     emitCurIGsize += sz;
 }
 
-#endif
 /*****************************************************************************
  *
  *  Add an instruction with a register + static member operands.
@@ -6720,13 +6716,12 @@ void emitter::emitDispIns(
     /* Display the instruction name */
 
     sstr = codeGen->genInsName(ins);
-#ifdef FEATURE_AVX_SUPPORT
+
     if (IsAVXInstruction(ins))
     {
         printf(" v%-8s", sstr);
     }
     else
-#endif // FEATURE_AVX_SUPPORT
     {
         printf(" %-9s", sstr);
     }
@@ -7093,7 +7088,6 @@ void emitter::emitDispIns(
             printf(" %s", emitRegName(id->idReg2(), attr));
             break;
 
-#ifdef FEATURE_AVX_SUPPORT
         case IF_RWR_RRD_RRD:
             assert(IsAVXInstruction(ins));
             assert(IsThreeOperandAVXInstruction(ins));
@@ -7110,7 +7104,6 @@ void emitter::emitDispIns(
             val = emitGetInsSC(id);
             goto PRINT_CONSTANT;
             break;
-#endif
         case IF_RRW_RRW_CNS:
             printf("%s,", emitRegName(id->idReg1(), attr));
             printf(" %s", emitRegName(id->idReg2(), attr));
@@ -7608,7 +7601,7 @@ BYTE* emitter::emitOutputAM(BYTE* dst, instrDesc* id, code_t code, CnsVal* addc)
     code = AddVexPrefixIfNeededAndNotPresent(ins, code, size);
 
     // For this format, moves do not support a third operand, so we only need to handle the binary ops.
-    if (IsThreeOperandBinaryAVXInstruction(ins))
+    if (IsDstDstSrcAVXInstruction(ins))
     {
         // Encode source operand reg in 'vvvv' bits in 1's complement form
         // The order of operands are reversed, therefore use reg2 as the source.
@@ -9248,12 +9241,12 @@ BYTE* emitter::emitOutputRR(BYTE* dst, instrDesc* id)
     //
     // TODO-XArch-CQ: Eventually we need to support 3 operand instruction formats. For
     // now we use the single source as source1 and source2.
-    if (IsThreeOperandBinaryAVXInstruction(ins))
+    if (IsDstDstSrcAVXInstruction(ins))
     {
         // encode source/dest operand reg in 'vvvv' bits in 1's complement form
         code = insEncodeReg3456(ins, reg1, size, code);
     }
-    else if (IsThreeOperandMoveAVXInstruction(ins))
+    else if (IsDstSrcSrcAVXInstruction(ins))
     {
         // encode source operand reg in 'vvvv' bits in 1's complement form
         code = insEncodeReg3456(ins, reg2, size, code);
@@ -9489,7 +9482,6 @@ BYTE* emitter::emitOutputRR(BYTE* dst, instrDesc* id)
     return dst;
 }
 
-#ifdef FEATURE_AVX_SUPPORT
 BYTE* emitter::emitOutputRRR(BYTE* dst, instrDesc* id)
 {
     code_t code;
@@ -9565,7 +9557,6 @@ BYTE* emitter::emitOutputRRR(BYTE* dst, instrDesc* id)
 
     return dst;
 }
-#endif
 
 /*****************************************************************************
  *
@@ -10758,7 +10749,6 @@ size_t emitter::emitOutputInstr(insGroup* ig, instrDesc* id, BYTE** dp)
             sz  = emitSizeOfInsDsc(id);
             break;
 
-#ifdef FEATURE_AVX_SUPPORT
         case IF_RWR_RRD_RRD:
             dst = emitOutputRRR(dst, id);
             sz  = emitSizeOfInsDsc(id);
@@ -10768,7 +10758,6 @@ size_t emitter::emitOutputInstr(insGroup* ig, instrDesc* id, BYTE** dp)
             sz  = emitSizeOfInsDsc(id);
             dst += emitOutputByte(dst, emitGetInsSC(id));
             break;
-#endif
 
         case IF_RRW_RRW_CNS:
             assert(id->idGCref() == GCT_NONE);
@@ -10798,7 +10787,6 @@ size_t emitter::emitOutputInstr(insGroup* ig, instrDesc* id, BYTE** dp)
             }
             assert(code & 0x00FF0000);
 
-#ifdef FEATURE_AVX_SUPPORT
             if (TakesRexWPrefix(ins, size))
             {
                 code = AddRexWPrefix(ins, code);
@@ -10806,7 +10794,7 @@ size_t emitter::emitOutputInstr(insGroup* ig, instrDesc* id, BYTE** dp)
 
             if (TakesVexPrefix(ins))
             {
-                if (IsThreeOperandBinaryAVXInstruction(ins))
+                if (IsDstDstSrcAVXInstruction(ins))
                 {
                     // Encode source/dest operand reg in 'vvvv' bits in 1's complement form
                     // This code will have to change when we support 3 operands.
@@ -10816,14 +10804,13 @@ size_t emitter::emitOutputInstr(insGroup* ig, instrDesc* id, BYTE** dp)
                     // (see x64 manual Table 2-9. Instructions with a VEX.vvvv destination)
                     code = insEncodeReg3456(ins, id->idReg1(), size, code);
                 }
-                else if (IsThreeOperandMoveAVXInstruction(ins))
+                else if (IsDstSrcSrcAVXInstruction(ins))
                 {
                     // This is a "merge" move instruction.
                     // Encode source operand reg in 'vvvv' bits in 1's complement form
                     code = insEncodeReg3456(ins, id->idReg2(), size, code);
                 }
             }
-#endif // FEATURE_AVX_SUPPORT
 
             regcode = (insEncodeReg345(ins, rReg, size, &code) | insEncodeReg012(ins, mReg, size, &code)) << 8;
 
@@ -11058,7 +11045,7 @@ size_t emitter::emitOutputInstr(insGroup* ig, instrDesc* id, BYTE** dp)
                 // TODO-XArch-CQ: Eventually we need to support 3 operand instruction formats. For
                 // now we use the single source as source1 and source2.
                 // For this format, moves do not support a third operand, so we only need to handle the binary ops.
-                if (IsThreeOperandBinaryAVXInstruction(ins))
+                if (IsDstDstSrcAVXInstruction(ins))
                 {
                     // encode source operand reg in 'vvvv' bits in 1's compliement form
                     code = insEncodeReg3456(ins, id->idReg1(), size, code);
@@ -11081,7 +11068,7 @@ size_t emitter::emitOutputInstr(insGroup* ig, instrDesc* id, BYTE** dp)
             // TODO-XArch-CQ: Eventually we need to support 3 operand instruction formats. For
             // now we use the single source as source1 and source2.
             // For this format, moves do not support a third operand, so we only need to handle the binary ops.
-            if (IsThreeOperandBinaryAVXInstruction(ins))
+            if (IsDstDstSrcAVXInstruction(ins))
             {
                 // encode source operand reg in 'vvvv' bits in 1's compliement form
                 code = insEncodeReg3456(ins, id->idReg1(), size, code);
@@ -11139,7 +11126,7 @@ size_t emitter::emitOutputInstr(insGroup* ig, instrDesc* id, BYTE** dp)
                 // TODO-XArch-CQ: Eventually we need to support 3 operand instruction formats. For
                 // now we use the single source as source1 and source2.
                 // For this format, moves do not support a third operand, so we only need to handle the binary ops.
-                if (IsThreeOperandBinaryAVXInstruction(ins))
+                if (IsDstDstSrcAVXInstruction(ins))
                 {
                     // encode source operand reg in 'vvvv' bits in 1's compliement form
                     code = insEncodeReg3456(ins, id->idReg1(), size, code);
@@ -11161,7 +11148,7 @@ size_t emitter::emitOutputInstr(insGroup* ig, instrDesc* id, BYTE** dp)
             // TODO-XArch-CQ: Eventually we need to support 3 operand instruction formats. For
             // now we use the single source as source1 and source2.
             // For this format, moves do not support a third operand, so we only need to handle the binary ops.
-            if (IsThreeOperandBinaryAVXInstruction(ins))
+            if (IsDstDstSrcAVXInstruction(ins))
             {
                 // encode source operand reg in 'vvvv' bits in 1's compliement form
                 code = insEncodeReg3456(ins, id->idReg1(), size, code);
@@ -11176,7 +11163,6 @@ size_t emitter::emitOutputInstr(insGroup* ig, instrDesc* id, BYTE** dp)
         case IF_MWR_RRD:
         case IF_MRW_RRD:
             code = insCodeMR(ins);
-#ifdef FEATURE_AVX_SUPPORT
             code = AddVexPrefixIfNeeded(ins, code, size);
 
             // In case of AVX instructions that take 3 operands, encode reg1 as first source.
@@ -11185,12 +11171,11 @@ size_t emitter::emitOutputInstr(insGroup* ig, instrDesc* id, BYTE** dp)
             // TODO-XArch-CQ: Eventually we need to support 3 operand instruction formats. For
             // now we use the single source as source1 and source2.
             // For this format, moves do not support a third operand, so we only need to handle the binary ops.
-            if (IsThreeOperandBinaryAVXInstruction(ins))
+            if (IsDstDstSrcAVXInstruction(ins))
             {
                 // encode source operand reg in 'vvvv' bits in 1's compliement form
                 code = insEncodeReg3456(ins, id->idReg1(), size, code);
             }
-#endif // FEATURE_AVX_SUPPORT
 
             regcode = (insEncodeReg345(ins, id->idReg1(), size, &code) << 8);
             dst     = emitOutputCV(dst, id, code | regcode | 0x0500);

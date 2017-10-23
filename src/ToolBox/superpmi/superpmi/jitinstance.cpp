@@ -12,7 +12,12 @@
 #include "errorhandling.h"
 #include "spmiutil.h"
 
-JitInstance* JitInstance::InitJit(char* nameOfJit, bool breakOnAssert, SimpleTimer* st1, MethodContext* firstContext, LightWeightMap<DWORD, DWORD>* options)
+JitInstance* JitInstance::InitJit(char*          nameOfJit,
+                                  bool           breakOnAssert,
+                                  SimpleTimer*   st1,
+                                  MethodContext* firstContext,
+                                  LightWeightMap<DWORD, DWORD>* forceOptions,
+                                  LightWeightMap<DWORD, DWORD>* options)
 {
     JitInstance* jit = new JitInstance();
     if (jit == nullptr)
@@ -20,6 +25,8 @@ JitInstance* JitInstance::InitJit(char* nameOfJit, bool breakOnAssert, SimpleTim
         LogError("Failed to allocate a JitInstance");
         return nullptr;
     }
+
+    jit->forceOptions = forceOptions;
 
     jit->options = options;
 
@@ -56,7 +63,7 @@ HRESULT JitInstance::StartUp(char*          PathToJit,
     char szTempFileName[MAX_PATH];
 
     // Get an allocator instance
-     //Note: we do this to keep cleanup somewhat simple...
+    // Note: we do this to keep cleanup somewhat simple...
     ourHeap = ::HeapCreate(0, 0, 0);
     if (ourHeap == nullptr)
     {
@@ -399,7 +406,17 @@ void JitInstance::timeResult(CORINFO_METHOD_INFO info, unsigned flags)
 
 /*-------------------------- Misc ---------------------------------------*/
 
+const wchar_t* JitInstance::getForceOption(const wchar_t* key)
+{
+    return getOption(key, forceOptions);
+}
+
 const wchar_t* JitInstance::getOption(const wchar_t* key)
+{
+    return getOption(key, options);
+}
+
+const wchar_t* JitInstance::getOption(const wchar_t* key, LightWeightMap<DWORD, DWORD>* options)
 {
     if (options == nullptr)
     {
@@ -453,7 +470,7 @@ bool JitInstance::resetConfig(MethodContext* firstContext)
 {
     if (pnjitStartup != nullptr)
     {
-        mc = firstContext;
+        mc                   = firstContext;
         ICorJitHost* newHost = new JitHost(*this);
         pnjitStartup(newHost);
         delete static_cast<JitHost*>(jitHost);

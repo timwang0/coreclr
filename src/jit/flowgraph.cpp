@@ -7056,6 +7056,19 @@ GenTreeCall* Compiler::fgGetStaticsCCtorHelper(CORINFO_CLASS_HANDLE cls, CorInfo
     GenTreeCall* result = gtNewHelperCallNode(helper, type, argList);
     result->gtFlags |= callFlags;
 
+    // If we're importing the special EqualityComparer<T>.Default
+    // intrinsic, flag the helper call. Later during inlining, we can
+    // remove the helper call if the associated field lookup is unused.
+    if ((info.compFlags & CORINFO_FLG_JIT_INTRINSIC) != 0)
+    {
+        NamedIntrinsic ni = lookupNamedIntrinsic(info.compMethodHnd);
+        if (ni == NI_System_Collections_Generic_EqualityComparer_get_Default)
+        {
+            JITDUMP("\nmarking helper call [06%u] as special dce...\n", result->gtTreeID);
+            result->gtCallMoreFlags |= GTF_CALL_M_HELPER_SPECIAL_DCE;
+        }
+    }
+
     return result;
 }
 
@@ -9952,6 +9965,7 @@ inline bool OperIsControlFlow(genTreeOps oper)
     switch (oper)
     {
         case GT_JTRUE:
+        case GT_JCMP:
         case GT_JCC:
         case GT_SWITCH:
         case GT_LABEL:
@@ -14451,6 +14465,10 @@ bool Compiler::fgOptimizeBranchToNext(BasicBlock* block, BasicBlock* bNext, Basi
             LIR::Range& blockRange = LIR::AsRange(block);
             GenTree*    jmp        = blockRange.LastNode();
             assert(jmp->OperIsConditionalJump());
+            if (jmp->OperGet() == GT_JTRUE)
+            {
+                jmp->gtOp.gtOp1->gtFlags &= ~GTF_SET_FLAGS;
+            }
 
             bool               isClosed;
             unsigned           sideEffects;
@@ -21061,10 +21079,15 @@ void Compiler::fgDebugCheckFlags(GenTreePtr tree)
 {
     noway_assert(tree->gtOper != GT_STMT);
 
-    genTreeOps oper      = tree->OperGet();
-    unsigned   kind      = tree->OperKind();
-    unsigned   treeFlags = tree->gtFlags & GTF_ALL_EFFECT;
-    unsigned   chkFlags  = 0;
+    const genTreeOps oper      = tree->OperGet();
+    const unsigned   kind      = tree->OperKind();
+    unsigned         treeFlags = tree->gtFlags & GTF_ALL_EFFECT;
+    unsigned         chkFlags  = 0;
+
+    if (tree->OperMayThrow(this))
+    {
+        chkFlags |= GTF_EXCEPT;
+    }
 
     /* Is this a leaf node? */
 
@@ -21201,7 +21224,7 @@ void Compiler::fgDebugCheckFlags(GenTreePtr tree)
 
             /* For a GT_ASG(GT_IND(x), y) we are interested in the side effects of x */
             GenTreePtr op1p;
-            if ((kind & GTK_ASGOP) && (op1->gtOper == GT_IND))
+            if (GenTree::OperIsAssignment(oper) && (op1->gtOper == GT_IND))
             {
                 op1p = op1->gtOp.gtOp1;
             }
@@ -21227,11 +21250,6 @@ void Compiler::fgDebugCheckFlags(GenTreePtr tree)
             chkFlags |= GTF_ASG;
         }
 
-        if (tree->OperMayThrow(this))
-        {
-            chkFlags |= GTF_EXCEPT;
-        }
-
         if (oper == GT_ADDR && (op1->OperIsLocal() || op1->gtOper == GT_CLS_VAR ||
                                 (op1->gtOper == GT_IND && op1->gtOp.gtOp1->gtOper == GT_CLS_VAR_ADDR)))
         {
@@ -21245,11 +21263,6 @@ void Compiler::fgDebugCheckFlags(GenTreePtr tree)
 
     else
     {
-        if (tree->OperMayThrow(this))
-        {
-            chkFlags |= GTF_EXCEPT;
-        }
-
         switch (tree->OperGet())
         {
             case GT_CALL:
@@ -21586,71 +21599,92 @@ void Compiler::fgDebugCheckLinks(bool morphTrees)
     fgDebugCheckBlockLinks();
 
     /* For each basic block check the bbTreeList links */
-    for (BasicBlock* block = fgFirstBB; block; block = block->bbNext)
+    for (BasicBlock* block = fgFirstBB; block != nullptr; block = block->bbNext)
     {
-    PROCESS_BLOCK_AGAIN:;
         if (block->IsLIR())
         {
             LIR::AsRange(block).CheckLIR(this);
         }
         else
         {
-            for (GenTreeStmt* stmt = block->firstStmt(); stmt; stmt = stmt->gtNextStmt)
+            fgDebugCheckStmtsList(block, morphTrees);
+        }
+    }
+
+    fgDebugCheckNodesUniqueness();
+}
+
+//------------------------------------------------------------------------------
+// fgDebugCheckStmtsList : Perfoms the set of checks:
+//    - all statements in the block are linked correctly
+//    - check statements flags
+//    - check nodes gtNext and gtPrev values, if the node list is threaded
+//
+// Arguments:
+//    block  - the block to check statements in
+//    morphTrees - try to morph trees in the checker
+//
+// Note:
+//    Checking that all bits that are set in treeFlags are also set in chkFlags is currently disabled.
+
+void Compiler::fgDebugCheckStmtsList(BasicBlock* block, bool morphTrees)
+{
+    for (GenTreeStmt* stmt = block->firstStmt(); stmt != nullptr; stmt = stmt->gtNextStmt)
+    {
+        /* Verify that bbTreeList is threaded correctly */
+        /* Note that for the GT_STMT list, the gtPrev list is circular. The gtNext list is not: gtNext of the
+        * last GT_STMT in a block is nullptr. */
+
+        noway_assert(stmt->gtPrev);
+
+        if (stmt == block->bbTreeList)
+        {
+            noway_assert(stmt->gtPrev->gtNext == nullptr);
+        }
+        else
+        {
+            noway_assert(stmt->gtPrev->gtNext == stmt);
+        }
+
+        if (stmt->gtNext)
+        {
+            noway_assert(stmt->gtNext->gtPrev == stmt);
+        }
+        else
+        {
+            noway_assert(block->lastStmt() == stmt);
+        }
+
+        /* For each statement check that the exception flags are properly set */
+
+        noway_assert(stmt->gtStmtExpr);
+
+        if (verbose && 0)
+        {
+            gtDispTree(stmt->gtStmtExpr);
+        }
+
+        fgDebugCheckFlags(stmt->gtStmtExpr);
+
+        // Not only will this stress fgMorphBlockStmt(), but we also get all the checks
+        // done by fgMorphTree()
+
+        if (morphTrees)
+        {
+            // If 'stmt' is removed from the block, start a new check for the current block,
+            // break the current check.
+            if (fgMorphBlockStmt(block, stmt DEBUGARG("test morphing")))
             {
-                /* Verify that bbTreeList is threaded correctly */
-                /* Note that for the GT_STMT list, the gtPrev list is circular. The gtNext list is not: gtNext of the
-                 * last GT_STMT in a block is nullptr. */
-
-                noway_assert(stmt->gtPrev);
-
-                if (stmt == block->bbTreeList)
-                {
-                    noway_assert(stmt->gtPrev->gtNext == nullptr);
-                }
-                else
-                {
-                    noway_assert(stmt->gtPrev->gtNext == stmt);
-                }
-
-                if (stmt->gtNext)
-                {
-                    noway_assert(stmt->gtNext->gtPrev == stmt);
-                }
-                else
-                {
-                    noway_assert(block->lastStmt() == stmt);
-                }
-
-                /* For each statement check that the exception flags are properly set */
-
-                noway_assert(stmt->gtStmtExpr);
-
-                if (verbose && 0)
-                {
-                    gtDispTree(stmt->gtStmtExpr);
-                }
-
-                fgDebugCheckFlags(stmt->gtStmtExpr);
-
-                // Not only will this stress fgMorphBlockStmt(), but we also get all the checks
-                // done by fgMorphTree()
-
-                if (morphTrees)
-                {
-                    // If 'stmt' is removed from the block, restart
-                    if (fgMorphBlockStmt(block, stmt DEBUGARG("test morphing")))
-                    {
-                        goto PROCESS_BLOCK_AGAIN;
-                    }
-                }
-
-                /* For each GT_STMT node check that the nodes are threaded correcly - gtStmtList */
-
-                if (fgStmtListThreaded)
-                {
-                    fgDebugCheckNodeLinks(block, stmt);
-                }
+                fgDebugCheckStmtsList(block, morphTrees);
+                break;
             }
+        }
+
+        /* For each GT_STMT node check that the nodes are threaded correcly - gtStmtList */
+
+        if (fgStmtListThreaded)
+        {
+            fgDebugCheckNodeLinks(block, stmt);
         }
     }
 }
@@ -21660,7 +21694,7 @@ void Compiler::fgDebugCheckBlockLinks()
 {
     assert(fgFirstBB->bbPrev == nullptr);
 
-    for (BasicBlock* block = fgFirstBB; block; block = block->bbNext)
+    for (BasicBlock* block = fgFirstBB; block != nullptr; block = block->bbNext)
     {
         if (block->bbNext)
         {
@@ -21712,6 +21746,76 @@ void Compiler::fgDebugCheckBlockLinks()
     }
 }
 
+// UniquenessCheckWalker keeps data that is neccesary to check
+// that each tree has it is own unique id and they do not repeat.
+class UniquenessCheckWalker
+{
+public:
+    UniquenessCheckWalker(Compiler* comp)
+        : comp(comp), nodesVecTraits(comp->compGenTreeID, comp), uniqueNodes(BitVecOps::MakeEmpty(&nodesVecTraits))
+    {
+    }
+
+    //------------------------------------------------------------------------
+    // fgMarkTreeId: Visit all subtrees in the tree and check gtTreeIDs.
+    //
+    // Arguments:
+    //    pTree     - Pointer to the tree to walk
+    //    fgWalkPre - the UniquenessCheckWalker instance
+    //
+    static Compiler::fgWalkResult MarkTreeId(GenTree** pTree, Compiler::fgWalkData* fgWalkPre)
+    {
+        UniquenessCheckWalker* walker   = static_cast<UniquenessCheckWalker*>(fgWalkPre->pCallbackData);
+        unsigned               gtTreeID = (*pTree)->gtTreeID;
+        walker->CheckTreeId(gtTreeID);
+        return Compiler::WALK_CONTINUE;
+    }
+
+    //------------------------------------------------------------------------
+    // CheckTreeId: Check that this tree was not visit before and memorize it as visited.
+    //
+    // Arguments:
+    //    gtTreeID - identificator of GenTree.
+    //
+    void CheckTreeId(unsigned gtTreeID)
+    {
+        assert(!BitVecOps::IsMember(&nodesVecTraits, uniqueNodes, gtTreeID));
+        BitVecOps::AddElemD(&nodesVecTraits, uniqueNodes, gtTreeID);
+    }
+
+private:
+    Compiler*    comp;
+    BitVecTraits nodesVecTraits;
+    BitVec       uniqueNodes;
+};
+
+//------------------------------------------------------------------------------
+// fgDebugCheckNodesUniqueness: Check that each tree in the method has its own unique gtTreeId.
+//
+void Compiler::fgDebugCheckNodesUniqueness()
+{
+    UniquenessCheckWalker walker(this);
+
+    for (BasicBlock* block = fgFirstBB; block != nullptr; block = block->bbNext)
+    {
+        if (block->IsLIR())
+        {
+            for (GenTreePtr i : LIR::AsRange(block))
+            {
+                walker.CheckTreeId(i->gtTreeID);
+            }
+        }
+        else
+        {
+            for (GenTreeStmt* stmt = block->firstStmt(); stmt != nullptr; stmt = stmt->gtNextStmt)
+            {
+                GenTreePtr root = stmt->gtStmtExpr;
+                fgWalkTreePre(&root, UniquenessCheckWalker::MarkTreeId, &walker);
+            }
+        }
+    }
+}
+
 /*****************************************************************************/
 #endif // DEBUG
 /*****************************************************************************/
@@ -21730,7 +21834,7 @@ void Compiler::fgDebugCheckBlockLinks()
 //
 //    Likewise the depth limit is a policy consideration, and serves mostly
 //    as a safeguard to prevent runaway inlining of small methods.
-
+//
 unsigned Compiler::fgCheckInlineDepthAndRecursion(InlineInfo* inlineInfo)
 {
     BYTE*          candidateCode = inlineInfo->inlineCandidateInfo->methInfo.ILCode;
@@ -22110,7 +22214,7 @@ void Compiler::fgAttachStructInlineeToAsg(GenTreePtr tree, GenTreePtr child, COR
             ? fgAssignStructInlineeToVar(child, retClsHnd) // Assign to a variable if it is a call.
             : child);                                      // Just get the address, if not a call.
 
-    tree->CopyFrom(gtNewCpObjNode(dstAddr, srcAddr, retClsHnd, false), this);
+    tree->ReplaceWith(gtNewCpObjNode(dstAddr, srcAddr, retClsHnd, false), this);
 }
 
 #endif // FEATURE_MULTIREG_RET
@@ -22184,12 +22288,12 @@ Compiler::fgWalkResult Compiler::fgUpdateInlineReturnExpressionPlaceHolder(GenTr
                 printf(" with ");
                 printTreeID(inlineCandidate);
                 printf("\n");
-                // Dump out the old return expression placeholder it will be overwritten by the CopyFrom below
+                // Dump out the old return expression placeholder it will be overwritten by the ReplaceWith below
                 comp->gtDispTree(tree);
             }
 #endif // DEBUG
 
-            tree->CopyFrom(inlineCandidate, comp);
+            tree->ReplaceWith(inlineCandidate, comp);
 
 #ifdef DEBUG
             if (comp->verbose)
@@ -22233,7 +22337,7 @@ Compiler::fgWalkResult Compiler::fgUpdateInlineReturnExpressionPlaceHolder(GenTr
                 CORINFO_METHOD_HANDLE  method      = call->gtCallMethHnd;
                 unsigned               methodFlags = 0;
                 CORINFO_CONTEXT_HANDLE context     = nullptr;
-                comp->impDevirtualizeCall(call, tree, &method, &methodFlags, &context, nullptr);
+                comp->impDevirtualizeCall(call, &method, &methodFlags, &context, nullptr);
             }
         }
     }
@@ -22260,7 +22364,7 @@ Compiler::fgWalkResult Compiler::fgUpdateInlineReturnExpressionPlaceHolder(GenTr
             else
             {
                 // Just assign the inlinee to a variable to keep it simple.
-                tree->CopyFrom(comp->fgAssignStructInlineeToVar(tree, retClsHnd), comp);
+                tree->ReplaceWith(comp->fgAssignStructInlineeToVar(tree, retClsHnd), comp);
             }
         }
     }
@@ -22890,7 +22994,7 @@ _Done:
         }
 #endif // DEBUG
         // Replace the call with the return expression
-        iciCall->CopyFrom(pInlineInfo->retExpr, this);
+        iciCall->ReplaceWith(pInlineInfo->retExpr, this);
     }
 
     //
@@ -22928,8 +23032,8 @@ GenTreePtr Compiler::fgInlinePrependStatements(InlineInfo* inlineInfo)
     GenTreeStmt* callStmt     = inlineInfo->iciStmt;
     IL_OFFSETX   callILOffset = callStmt->gtStmtILoffsx;
     GenTreeStmt* postStmt     = callStmt->gtNextStmt;
-    GenTreePtr   afterStmt    = callStmt; // afterStmt is the place where the new statements should be inserted after.
-    GenTreePtr   newStmt      = nullptr;
+    GenTree*     afterStmt    = callStmt; // afterStmt is the place where the new statements should be inserted after.
+    GenTree*     newStmt      = nullptr;
     GenTreeCall* call         = inlineInfo->iciCall->AsCall();
 
     noway_assert(call->gtOper == GT_CALL);
@@ -23010,7 +23114,7 @@ GenTreePtr Compiler::fgInlinePrependStatements(InlineInfo* inlineInfo)
                     // Change the temp in-place to the actual argument.
                     // We currently do not support this for struct arguments, so it must not be a GT_OBJ.
                     assert(argNode->gtOper != GT_OBJ);
-                    argSingleUseNode->CopyFrom(argNode, this);
+                    argSingleUseNode->ReplaceWith(argNode, this);
                     continue;
                 }
                 else
@@ -23074,6 +23178,8 @@ GenTreePtr Compiler::fgInlinePrependStatements(InlineInfo* inlineInfo)
                 if (argInfo.argHasSideEff)
                 {
                     noway_assert(argInfo.argIsUsed == false);
+                    newStmt     = nullptr;
+                    bool append = true;
 
                     if (argNode->gtOper == GT_OBJ || argNode->gtOper == GT_MKREFANY)
                     {
@@ -23084,16 +23190,92 @@ GenTreePtr Compiler::fgInlinePrependStatements(InlineInfo* inlineInfo)
                     }
                     else
                     {
-                        newStmt = gtNewStmt(gtUnusedValNode(argNode), callILOffset);
-                    }
-                    afterStmt = fgInsertStmtAfter(block, afterStmt, newStmt);
+                        // In some special cases, unused args with side effects can
+                        // trigger further changes.
+                        //
+                        // (1) If the arg is a static field access and the field access
+                        // was produced by a call to EqualityComparer<T>.get_Default, the
+                        // helper call to ensure the field has a value can be suppressed.
+                        // This helper call is marked as a "Special DCE" helper during
+                        // importation, over in fgGetStaticsCCtorHelper.
+                        //
+                        // (2) NYI. If, after tunneling through GT_RET_VALs, we find that
+                        // the actual arg expression has no side effects, we can skip
+                        // appending all together. This will help jit TP a bit.
+                        //
+                        // Chase through any GT_RET_EXPRs to find the actual argument
+                        // expression.
+                        GenTree* actualArgNode = argNode;
+                        while (actualArgNode->gtOper == GT_RET_EXPR)
+                        {
+                            actualArgNode = actualArgNode->gtRetExpr.gtInlineCandidate;
+                        }
 
-#ifdef DEBUG
-                    if (verbose)
-                    {
-                        gtDispTree(afterStmt);
+                        // For case (1)
+                        //
+                        // Look for the following tree shapes
+                        // prejit: (IND (ADD (CONST, CALL(special dce helper...))))
+                        // jit   : (COMMA (CALL(special dce helper...), (FIELD ...)))
+                        if (actualArgNode->gtOper == GT_COMMA)
+                        {
+                            // Look for (COMMA (CALL(special dce helper...), (FIELD ...)))
+                            GenTree* op1 = actualArgNode->gtOp.gtOp1;
+                            GenTree* op2 = actualArgNode->gtOp.gtOp2;
+                            if (op1->IsCall() && ((op1->gtCall.gtCallMoreFlags & GTF_CALL_M_HELPER_SPECIAL_DCE) != 0) &&
+                                (op2->gtOper == GT_FIELD) && ((op2->gtFlags & GTF_EXCEPT) == 0))
+                            {
+                                JITDUMP("\nPerforming special dce on unused arg [%06u]:"
+                                        " actual arg [%06u] helper call [%06u]\n",
+                                        argNode->gtTreeID, actualArgNode->gtTreeID, op1->gtTreeID);
+                                // Drop the whole tree
+                                append = false;
+                            }
+                        }
+                        else if (actualArgNode->gtOper == GT_IND)
+                        {
+                            // Look for (IND (ADD (CONST, CALL(special dce helper...))))
+                            GenTree* addr = actualArgNode->gtOp.gtOp1;
+
+                            if (addr->gtOper == GT_ADD)
+                            {
+                                GenTree* op1 = addr->gtOp.gtOp1;
+                                GenTree* op2 = addr->gtOp.gtOp2;
+                                if (op1->IsCall() &&
+                                    ((op1->gtCall.gtCallMoreFlags & GTF_CALL_M_HELPER_SPECIAL_DCE) != 0) &&
+                                    op2->IsCnsIntOrI())
+                                {
+                                    // Drop the whole tree
+                                    JITDUMP("\nPerforming special dce on unused arg [%06u]:"
+                                            " actual arg [%06u] helper call [%06u]\n",
+                                            argNode->gtTreeID, actualArgNode->gtTreeID, op1->gtTreeID);
+                                    append = false;
+                                }
+                            }
+                        }
                     }
+
+                    if (!append)
+                    {
+                        assert(newStmt == nullptr);
+                        JITDUMP("Arg tree side effects were discardable, not appending anything for arg\n");
+                    }
+                    else
+                    {
+                        // If we don't have something custom to append,
+                        // just append the arg node as an unused value.
+                        if (newStmt == nullptr)
+                        {
+                            newStmt = gtNewStmt(gtUnusedValNode(argNode), callILOffset);
+                        }
+
+                        afterStmt = fgInsertStmtAfter(block, afterStmt, newStmt);
+#ifdef DEBUG
+                        if (verbose)
+                        {
+                            gtDispTree(afterStmt);
+                        }
 #endif // DEBUG
+                    }
                 }
                 else if (argNode->IsBoxedValue())
                 {
@@ -23371,8 +23553,10 @@ Compiler::fgWalkResult Compiler::fgChkThrowCB(GenTreePtr* pTree, fgWalkData* dat
         case GT_MUL:
         case GT_ADD:
         case GT_SUB:
+#ifdef LEGACY_BACKEND
         case GT_ASG_ADD:
         case GT_ASG_SUB:
+#endif
         case GT_CAST:
             if (tree->gtOverflow())
             {

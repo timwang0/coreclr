@@ -277,16 +277,12 @@ PAL_IsDebuggerPresent(VOID);
 #define _UI32_MAX UINT_MAX
 #define _UI32_MIN UINT_MIN
 
-#ifdef PAL_STDCPP_COMPAT
 #undef NULL
-#endif
 
-#ifndef NULL
 #if defined(__cplusplus)
 #define NULL    0
 #else
 #define NULL    ((void *)0)
-#endif
 #endif
 
 #if defined(PAL_STDCPP_COMPAT) && !defined(__cplusplus)
@@ -4202,6 +4198,9 @@ InterlockedDecrement(
     return __sync_sub_and_fetch(lpAddend, (LONG)1);
 }
 
+#define InterlockedDecrementAcquire InterlockedDecrement
+#define InterlockedDecrementRelease InterlockedDecrement
+
 EXTERN_C
 PALIMPORT
 inline
@@ -4297,39 +4296,8 @@ InterlockedCompareExchange(
         Exchange /* The value to be stored */);
 }
 
-EXTERN_C
-PALIMPORT
-inline
-LONG
-PALAPI
-InterlockedCompareExchangeAcquire(
-    IN OUT LONG volatile *Destination,
-    IN LONG Exchange,
-    IN LONG Comperand)
-{
-    // TODO: implement the version with only the acquire semantics
-    return __sync_val_compare_and_swap(
-        Destination, /* The pointer to a variable whose value is to be compared with. */
-        Comperand, /* The value to be compared */
-        Exchange /* The value to be stored */);
-}
-
-EXTERN_C
-PALIMPORT
-inline
-LONG
-PALAPI
-InterlockedCompareExchangeRelease(
-    IN OUT LONG volatile *Destination,
-    IN LONG Exchange,
-    IN LONG Comperand)
-{
-    // TODO: implement the version with only the release semantics
-    return __sync_val_compare_and_swap(
-        Destination, /* The pointer to a variable whose value is to be compared with. */
-        Comperand, /* The value to be compared */
-        Exchange /* The value to be stored */);
-}
+#define InterlockedCompareExchangeAcquire InterlockedCompareExchange
+#define InterlockedCompareExchangeRelease InterlockedCompareExchange
 
 // See the 32-bit variant in interlock2.s
 EXTERN_C
@@ -4873,6 +4841,15 @@ GetProcessAffinityMask(
   IN HANDLE hProcess,
   OUT PDWORD_PTR lpProcessAffinityMask,
   OUT PDWORD_PTR lpSystemAffinityMask
+);
+
+PALIMPORT
+BOOL
+PALAPI
+SetThreadIdealProcessorEx(
+  IN HANDLE hThread,
+  IN PPROCESSOR_NUMBER lpIdealProcessor,
+  OUT PPROCESSOR_NUMBER lpPreviousIdealProcessor
 );
 
 //
